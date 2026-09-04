@@ -1,0 +1,59 @@
+# 复制本文件为 case.toml，并把相对路径改为当前病例文件的位置。
+# 所有路径均使用 TOML 单引号字面量；Windows 下可安全使用正斜杠。
+
+[case]
+# 病例标识会成为所有输出文件名的前缀。
+id = 'patient_043'
+# 输出目录不存在时由工作流创建。
+output_directory = 'outputs'
+
+[short_axis]
+# 原始长轴/任意方向 MR NIfTI；短轴规划流程的必需输入。
+source_mr = 'inputs/patient_043_mr.nii.gz'
+# 原始世界空间供血区 mask；完整流程的必需输入，可选用于只生成短轴。
+source_mask = 'inputs/patient_043_territory.nii.gz'
+# 短轴层间距（mm）。
+slice_spacing_mm = 8.0
+# 短轴平面内像素间距（mm）；省略时由规划界面决定。
+pixel_spacing_mm = 1.25
+# 短轴视野 [宽, 高]（mm）；省略时由规划界面决定。
+fov_mm = [192.0, 192.0]
+
+[bullseye]
+# 以下三项仅供 cardiac-bullseye 的独立运行使用；
+# cardiac-pipeline 使用本次短轴规划刚生成的文件，因此会忽略它们。
+short_axis_mr = 'outputs/patient_043_short_axis.nii.gz'
+short_axis_mask = 'outputs/patient_043_short_axis_mask.nii.gz'
+geometry_json = 'outputs/patient_043_geometry.json'
+
+# 冠脉 mask 和原始世界空间心肌 mask 是牛眼图与完整流程的必需输入。
+coronary_mask = 'inputs/patient_043_coronary.nii.gz'
+world_myocardium_mask = 'inputs/patient_043_myocardium.nii.gz'
+
+# 将输入供血区标签映射为 LAD=1、LCX=2、RCA=3。
+territory_label_map = { '2' = 1, '3' = 2, '4' = 3 }
+angle_count = 360
+radial_count = 300
+angular_smoothing_sigma_deg = 1.5
+radial_smoothing_sigma = 1.5
+six_segment_warp = true
+
+# true 表示 coronary_mask 已是一体素宽中心线；false 会先进行 3D 骨架化。
+coronary_mask_is_centerline = false
+coronary_min_path_length_mm = 2.0
+coronary_resample_step_mm = 0.75
+coronary_smoothing_sigma_voxels = 0.0
+coronary_default_color = '#d62728'
+coronary_label_colors = { '2' = '#e41a1c', '3' = '#377eb8', '4' = '#4daf4a' }
+coronary_label_names = { '2' = 'Coronary LAD', '3' = 'Coronary LCX', '4' = 'Coronary RCA' }
+coronary_linewidth = 1.8
+
+# 参与最近冠脉距离计算的冠脉标签、色图和显示范围（mm）。
+distance_vessel_labels = [2, 3, 4]
+distance_colormap = 'turbo'
+distance_value_range_mm = [0.0, 50.0]
+
+# 设为 1、2 或 3 可固定心尖供血区；省略时由数据决定。
+apex_territory = 1
+# 是否在写出 PNG 后显示交互式图窗。
+show_final_figure = true
