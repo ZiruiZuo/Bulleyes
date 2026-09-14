@@ -4,7 +4,7 @@
 
 **Goal:** Build a portable three-argument tool that interactively selects per-slice normal-myocardium ROIs and writes a native-grid 5-SD LGE scar mask.
 
-**Architecture:** A repository-root `lge_scar_mask_tool` folder contains independent calculation, image I/O, Matplotlib annotation, and CLI orchestration modules. It does not import the parent `cardiac_bullseye` package; tests import the folder directly and verify calculation, interaction state, cancellation, geometry preservation, and CLI behavior.
+**Architecture:** The sibling folder `E:/ZZR/Code/Tools/lgeMask` contains independent calculation, image I/O, Matplotlib annotation, and CLI orchestration modules. It does not import the `Bulleyes` project's `cardiac_bullseye` package; tests import the folder directly and verify calculation, interaction state, cancellation, geometry preservation, and CLI behavior.
 
 **Tech Stack:** Python 3.10+, NumPy, Matplotlib, PyQt5, SimpleITK, pytest (development only)
 
@@ -27,9 +27,9 @@
 ### Task 1: Pure Per-Slice Scar Calculation
 
 **Files:**
-- Create: `lge_scar_mask_tool/scar.py`
-- Create: `lge_scar_mask_tool/tests/conftest.py`
-- Create: `lge_scar_mask_tool/tests/test_scar.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/scar.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/tests/conftest.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/tests/test_scar.py`
 
 **Interfaces:**
 - Consumes: NumPy image, myocardium, and ROI arrays.
@@ -78,7 +78,7 @@ def test_reference_statistics_reject_fewer_than_twenty_valid_voxels():
 
 - [ ] **Step 2: Run the new tests and verify import failure**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_scar.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_scar.py -v`
 
 Expected: FAIL because `scar.py` or its public functions do not exist.
 
@@ -111,7 +111,7 @@ def compute_reference_statistics(image_slice, myocardium_mask, roi_mask, *, min_
 
 - [ ] **Step 4: Run statistics tests and verify they pass**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_scar.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_scar.py -v`
 
 Expected: 2 passed.
 
@@ -155,7 +155,7 @@ def test_scar_requires_finite_myocardium_voxel_strictly_above_threshold():
 
 - [ ] **Step 6: Run the new tests and verify missing-volume-function failure**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_scar.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_scar.py -v`
 
 Expected: FAIL because `compute_scar_mask` does not exist.
 
@@ -187,24 +187,23 @@ def compute_scar_mask(lge, myocardium, roi_masks):
     return ScarMaskResult(scar, tuple(statistics))
 ```
 
-- [ ] **Step 8: Run calculation tests and commit the task**
+- [ ] **Step 8: Run calculation tests and inspect the task files**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_scar.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_scar.py -v`
 
 Expected: all tests pass.
 
-```bash
-git add lge_scar_mask_tool/scar.py lge_scar_mask_tool/tests/conftest.py lge_scar_mask_tool/tests/test_scar.py
-git commit -m "feat: add standalone LGE scar calculation"
-```
+Inspect the three task files after the tests pass. The target folder is outside
+the existing `Bulleyes` Git repository, so this plan does not initialize or
+modify version-control metadata for `lgeMask`.
 
 ---
 
 ### Task 2: Exact-Grid Image Loading and Native-Grid Saving
 
 **Files:**
-- Create: `lge_scar_mask_tool/image_io.py`
-- Create: `lge_scar_mask_tool/tests/test_image_io.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/image_io.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/tests/test_image_io.py`
 
 **Interfaces:**
 - Consumes: LGE path, myocardium-mask path, destination path, and a cropped boolean scar array.
@@ -254,7 +253,7 @@ def test_load_study_rejects_geometry_mismatch_without_resampling(tmp_path):
 
 - [ ] **Step 2: Run I/O tests and verify import failure**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_image_io.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_image_io.py -v`
 
 Expected: FAIL because `image_io.py` does not exist.
 
@@ -267,7 +266,7 @@ Compare size exactly and spacing/origin/direction with absolute tolerances
 
 - [ ] **Step 4: Run loading tests and verify they pass**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_image_io.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_image_io.py -v`
 
 Expected: 2 passed.
 
@@ -310,7 +309,7 @@ def test_save_restores_complete_grid_metadata_and_overwrites(tmp_path):
 
 - [ ] **Step 6: Run tests and verify missing save-function failures**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_image_io.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_image_io.py -v`
 
 Expected: FAIL because output validation and saving are not implemented.
 
@@ -321,24 +320,21 @@ insert the cropped scar into a zero-filled `uint8` full grid at `first_slice`,
 intersect with cropped myocardium, copy the reference image information, and
 write through SimpleITK to the requested path.
 
-- [ ] **Step 8: Run I/O tests and commit the task**
+- [ ] **Step 8: Run I/O tests and inspect the task files**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_image_io.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_image_io.py -v`
 
 Expected: all tests pass.
 
-```bash
-git add lge_scar_mask_tool/image_io.py lge_scar_mask_tool/tests/test_image_io.py
-git commit -m "feat: add standalone LGE image IO"
-```
+Inspect `image_io.py` and its tests after the tests pass.
 
 ---
 
 ### Task 3: Fresh Brush ROI Annotation with Accept and Skip
 
 **Files:**
-- Create: `lge_scar_mask_tool/roi_selector.py`
-- Create: `lge_scar_mask_tool/tests/test_roi_selector.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/roi_selector.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/tests/test_roi_selector.py`
 
 **Interfaces:**
 - Consumes: cropped LGE and myocardium arrays.
@@ -372,7 +368,7 @@ def test_zoom_keeps_cursor_on_same_image_coordinate():
 
 - [ ] **Step 2: Run pure interaction tests and verify import failure**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_roi_selector.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_roi_selector.py -v`
 
 Expected: FAIL because `roi_selector.py` does not exist.
 
@@ -384,7 +380,7 @@ imports.
 
 - [ ] **Step 4: Run pure interaction tests and verify they pass**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_roi_selector.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_roi_selector.py -v`
 
 Expected: 2 passed.
 
@@ -400,7 +396,7 @@ than reusing the first returned masks.
 
 - [ ] **Step 6: Run GUI tests and verify missing-selector failure**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_roi_selector.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_roi_selector.py -v`
 
 Expected: FAIL because the interactive selector is not implemented.
 
@@ -414,26 +410,23 @@ every brush update to finite myocardium. `Accept` calls
 and stays on the slice. `Skip` stores `None`. Window close or `Save & Quit`
 raises `AnnotationCancelled` after the event loop ends.
 
-- [ ] **Step 8: Run ROI tests and commit the task**
+- [ ] **Step 8: Run ROI tests and inspect the task files**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_roi_selector.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_roi_selector.py -v`
 
 Expected: all tests pass.
 
-```bash
-git add lge_scar_mask_tool/roi_selector.py lge_scar_mask_tool/tests/test_roi_selector.py
-git commit -m "feat: add standalone LGE ROI selector"
-```
+Inspect `roi_selector.py` and its tests after the tests pass.
 
 ---
 
 ### Task 4: CLI Orchestration, Cancellation Safety, and Portable Documentation
 
 **Files:**
-- Create: `lge_scar_mask_tool/main.py`
-- Create: `lge_scar_mask_tool/requirements.txt`
-- Create: `lge_scar_mask_tool/README.md`
-- Create: `lge_scar_mask_tool/tests/test_main.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/main.py`
+- Create: `E:/ZZR/Code/Tools/lgeMask/requirements.txt`
+- Create: `E:/ZZR/Code/Tools/lgeMask/README.md`
+- Create: `E:/ZZR/Code/Tools/lgeMask/tests/test_main.py`
 
 **Interfaces:**
 - Consumes: exactly `--lge`, `--mask`, and `--output` paths.
@@ -483,7 +476,7 @@ def test_run_does_not_save_when_annotation_is_cancelled(monkeypatch, tmp_path):
 
 - [ ] **Step 2: Run CLI tests and verify import failure**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_main.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_main.py -v`
 
 Expected: FAIL because `main.py` does not exist.
 
@@ -502,7 +495,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run CLI tests and verify they pass**
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_main.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_main.py -v`
 
 Expected: all tests pass.
 
@@ -528,31 +521,26 @@ Extend `test_main.py` to parse every standalone source file with `ast` and
 assert that no import starts with `cardiac_bullseye`. Assert the requirements
 file has exactly the four declared runtime dependencies.
 
-Run: `python -m pytest lge_scar_mask_tool/tests/test_main.py -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests/test_main.py -v`
 
 Expected: all tests pass.
 
 - [ ] **Step 7: Run full verification and command help smoke test**
 
-Run: `python -m pytest lge_scar_mask_tool/tests -v`
+Run: `python -m pytest E:/ZZR/Code/Tools/lgeMask/tests -v`
 
 Expected: all standalone tests pass.
 
-Run from `lge_scar_mask_tool`: `python main.py --help`
+Run from `E:/ZZR/Code/Tools/lgeMask`: `python main.py --help`
 
 Expected: exit 0 and help text listing exactly `--lge`, `--mask`, and
 `--output` as required tool-specific options.
 
-Run: `python -m compileall -q lge_scar_mask_tool`
+Run: `python -m compileall -q E:/ZZR/Code/Tools/lgeMask`
 
 Expected: exit 0 with no syntax errors.
 
-- [ ] **Step 8: Review scope and commit the completed standalone tool**
+- [ ] **Step 8: Review the completed standalone tool scope**
 
-Verify `git diff --check`, confirm no existing `cardiac_bullseye` source file
-changed in this phase, and inspect all standalone files.
-
-```bash
-git add lge_scar_mask_tool
-git commit -m "feat: add portable LGE scar mask tool"
-```
+Confirm no existing `cardiac_bullseye` source file changed in this phase and
+inspect all standalone files under `E:/ZZR/Code/Tools/lgeMask`.

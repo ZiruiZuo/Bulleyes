@@ -13,10 +13,10 @@ new scar mask and that command will be implemented separately when requested.
 
 ## Location and Portability
 
-The tool will live in an independent folder at the repository root:
+The tool will live as a sibling of `Bulleyes` under the shared Tools directory:
 
 ```text
-lge_scar_mask_tool/
+E:/ZZR/Code/Tools/lgeMask/
 ├── main.py
 ├── image_io.py
 ├── roi_selector.py
@@ -26,9 +26,9 @@ lge_scar_mask_tool/
 └── tests/
 ```
 
-The tool must not import `cardiac_bullseye` or require the parent project to be
-installed. Copying this one folder to another Windows computer, installing its
-`requirements.txt`, and running `main.py` must be sufficient.
+The tool must not import `cardiac_bullseye` or require the `Bulleyes` project to
+be installed. Copying this one folder to another Windows computer, installing
+its `requirements.txt`, and running `main.py` must be sufficient.
 
 ## Command-Line Interface
 
