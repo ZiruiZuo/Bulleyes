@@ -77,11 +77,14 @@ def _draw_radial_line(
     )
 
 
-def draw_aha17_boundaries(axis: Axes, *, show_numbers: bool = True) -> None:
+def draw_aha17_boundaries(
+    axis: Axes, *, show_numbers: bool = True, include_apex: bool = True
+) -> None:
     """Draw the canonical 6+6+4+1 AHA-17 geometry on an axis."""
 
     circle_angle = np.linspace(0.0, 2.0 * np.pi, 721)
-    for radius in (1.0, 2.0, 3.0, 4.0):
+    radii = (1.0, 2.0, 3.0, 4.0) if include_apex else (2.0, 3.0, 4.0)
+    for radius in radii:
         axis.plot(
             radius * np.cos(circle_angle),
             radius * np.sin(circle_angle),
@@ -92,10 +95,10 @@ def draw_aha17_boundaries(axis: Axes, *, show_numbers: bool = True) -> None:
     for angle in (60, 120, 180, 240, 300, 360):
         _draw_radial_line(axis, angle, 2.0, 4.0)
     for angle in (45, 135, 225, 315):
-        _draw_radial_line(axis, angle, 1.0, 2.0)
+        _draw_radial_line(axis, angle, 1.0 if include_apex else 0.0, 2.0)
 
     if show_numbers:
-        _draw_segment_numbers(axis)
+        _draw_segment_numbers(axis, include_apex=include_apex)
 
     axis.set_aspect("equal")
     axis.set_xlim(-4.2, 4.2)
@@ -103,7 +106,7 @@ def draw_aha17_boundaries(axis: Axes, *, show_numbers: bool = True) -> None:
     axis.set_axis_off()
 
 
-def _draw_segment_numbers(axis: Axes) -> None:
+def _draw_segment_numbers(axis: Axes, *, include_apex: bool = True) -> None:
     for radius, segment_start in ((3.5, 1), (2.5, 7)):
         for offset, angle_deg in enumerate(SIX_SECTOR_CENTERS_DEG):
             angle = np.deg2rad(angle_deg)
@@ -127,7 +130,8 @@ def _draw_segment_numbers(axis: Axes) -> None:
             fontsize=11,
         )
 
-    axis.text(0.0, 0.0, "17", ha="center", va="center", fontsize=11)
+    if include_apex:
+        axis.text(0.0, 0.0, "17", ha="center", va="center", fontsize=11)
 
 
 def plot_aha17_template(

@@ -13,6 +13,7 @@ from matplotlib.widgets import Button, Slider, TextBox
 from .geometry import (
     LongAxisPlan,
     PlaneGrid,
+    StackResult,
     build_long_axis_plan,
     build_vla_from_axial_points,
     fit_plane_grid,
@@ -20,10 +21,19 @@ from .geometry import (
     line_segment_for_level,
     projection_limits,
     resample_plane,
+    undirected_axis_angle_deg,
     voxel_axis_world_direction,
 )
-from .nifti import NiftiVolume, load_nifti, save_nifti, validate_mask_grid
+from .nifti import (
+    NiftiVolume,
+    constrained_reference_x_axis,
+    load_nifti,
+    recenter_affine_to_reference,
+    save_nifti,
+    validate_mask_grid,
+)
 from .metadata import default_geometry_path, save_planning_geometry
+from .saved_points import load_short_axis_points, save_short_axis_points
 
 
 def _ensure_interactive_backend() -> None:
@@ -67,6 +77,8 @@ class ShortAxisPlanner:
         slice_spacing_mm: float = 8.0,
         pixel_spacing_mm: float | None = None,
         fov_mm: tuple[float, float] | None = None,
+        orientation_reference: NiftiVolume | None = None,
+        points_output_path: str | Path | None = None,
     ) -> None:
         if mask is not None:
             validate_mask_grid(image, mask)
@@ -74,6 +86,7 @@ class ShortAxisPlanner:
             raise ValueError("slice spacing must be positive")
         self.image = image
         self.mask = mask
+        self.orientation_reference = orientation_reference
         self.output_path = Path(output_path).expanduser().resolve()
         self.mask_output_path = (
             Path(mask_output_path).expanduser().resolve() if mask_output_path else None
@@ -82,6 +95,15 @@ class ShortAxisPlanner:
             Path(geometry_output_path).expanduser().resolve()
             if geometry_output_path
             else default_geometry_path(self.output_path)
+        )
+        self.points_output_path = (
+            Path(points_output_path).expanduser().resolve()
+            if points_output_path
+            else self.output_path.with_name(
+                self.output_path.name.replace(".nii.gz", "_points.json")
+                if self.output_path.name.endswith(".nii.gz")
+                else self.output_path.stem + "_points.json"
+            )
         )
         voxel_sizes = np.linalg.norm(image.affine[:3, :3], axis=0)
         self.pixel_spacing_mm = float(pixel_spacing_mm or np.min(voxel_sizes))
@@ -259,6 +281,10 @@ class ShortAxisPlanner:
     def _render_planning(self) -> None:
         assert self.vla_grid is not None and self.hla_grid is not None and self.plan is not None
         self.stage = "plan"
+        # Axes.clear() removes every locator Line2D and invalidates its
+        # remove callback. Drop our references first so _draw_locator_lines()
+        # does not try to remove the already-detached artists.
+        self.line_artists.clear()
         self.ax_left.clear()
         self.ax_right.clear()
         self.ax_right.set_visible(True)
@@ -274,7 +300,14 @@ class ShortAxisPlanner:
             )
             self._show_image(ax, image, mask)
             ax.set_title(label)
-        self.title.set_text("Step 3/3: drag cyan Apex and orange Base boundary lines; then Save")
+        title = "Step 3/3: drag cyan Apex and orange Base boundary lines; then Save"
+        reference_difference = self._reference_long_axis_difference_deg()
+        if reference_difference is not None:
+            title += (
+                "\nLong-axis difference to LGE reference: "
+                f"{reference_difference:.2f}°"
+            )
+        self.title.set_text(title)
         self.slice_slider.ax.set_visible(False)
         self.back_button.ax.set_visible(True)
         self.next_button.label.set_text("Save")
@@ -287,6 +320,18 @@ class ShortAxisPlanner:
         return (
             f"Coverage {self.base_t - self.apex_t:.1f} mm; {count} slices; "
             f"spacing {self.slice_spacing_mm:g} mm. Drag either coloured boundary in either panel."
+        )
+
+    def _reference_long_axis_difference_deg(self) -> float | None:
+        if self.plan is None or self.orientation_reference is None:
+            return None
+        reference_long_axis = voxel_axis_world_direction(
+            self.orientation_reference.affine,
+            2,
+        )
+        return undirected_axis_angle_deg(
+            self.plan.long_axis,
+            reference_long_axis,
         )
 
     def _draw_locator_lines(self) -> None:
@@ -472,7 +517,15 @@ class ShortAxisPlanner:
 
     def _save(self) -> None:
         assert self.plan is not None
-        result = generate_short_axis_stack(
+        reference_x_axis = (
+            constrained_reference_x_axis(
+                self.orientation_reference.affine,
+                self.plan.long_axis,
+            )
+            if self.orientation_reference is not None
+            else None
+        )
+        sampled_result = generate_short_axis_stack(
             self.image.data,
             self.image.affine,
             self.plan,
@@ -482,7 +535,22 @@ class ShortAxisPlanner:
             self.pixel_spacing_mm,
             self.fov_mm,
             interpolation_order=1,
+            reference_x_axis=reference_x_axis,
         )
+        if self.orientation_reference is None:
+            result = sampled_result
+        else:
+            display_affine = recenter_affine_to_reference(
+                sampled_result.affine,
+                sampled_result.data.shape,
+                self.orientation_reference.affine,
+                self.orientation_reference.data.shape,
+            )
+            result = StackResult(
+                sampled_result.data,
+                display_affine,
+                sampled_result.positions_mm,
+            )
         save_nifti(self.output_path, result.data.astype(np.float32), result.affine, self.image.header)
         saved = [str(self.output_path)]
         geometry_path = save_planning_geometry(
@@ -493,8 +561,39 @@ class ShortAxisPlanner:
             base_t_mm=self.base_t,
             source_image_path=self.image.path,
             short_axis_path=self.output_path,
+            sampling_affine=sampled_result.affine,
+            reference_long_axis_difference_deg=(
+                self._reference_long_axis_difference_deg()
+            ),
+            orientation_reference_path=(
+                self.orientation_reference.path
+                if self.orientation_reference is not None
+                else None
+            ),
         )
         saved.append(str(geometry_path))
+        points_path = save_short_axis_points(
+            self.points_output_path,
+            plan=self.plan,
+            apex_t_mm=self.apex_t,
+            base_t_mm=self.base_t,
+            slice_spacing_mm=self.slice_spacing_mm,
+            pixel_spacing_mm=self.pixel_spacing_mm,
+            fov_mm=self.fov_mm,
+            source_shape=self.image.data.shape,
+            source_affine=self.image.affine,
+            reference_x_axis=reference_x_axis,
+            display_affine=result.affine,
+            orientation_reference_path=(
+                self.orientation_reference.path
+                if self.orientation_reference is not None
+                else None
+            ),
+            reference_long_axis_difference_deg=(
+                self._reference_long_axis_difference_deg()
+            ),
+        )
+        saved.append(str(points_path))
         if self.mask is not None:
             mask_result = generate_short_axis_stack(
                 self.mask.data,
@@ -506,6 +605,7 @@ class ShortAxisPlanner:
                 self.pixel_spacing_mm,
                 self.fov_mm,
                 interpolation_order=0,
+                reference_x_axis=reference_x_axis,
             )
             output = self.mask_output_path or self.output_path.with_name(
                 self.output_path.name.replace(".nii.gz", "_mask.nii.gz")
@@ -513,7 +613,12 @@ class ShortAxisPlanner:
                 else self.output_path.stem + "_mask.nii"
             )
             dtype = self.mask.data.dtype if np.issubdtype(self.mask.data.dtype, np.integer) else np.int16
-            save_nifti(output, np.rint(mask_result.data).astype(dtype), mask_result.affine, self.mask.header)
+            save_nifti(
+                output,
+                np.rint(mask_result.data).astype(dtype),
+                result.affine,
+                self.mask.header,
+            )
             saved.append(str(output))
         self._set_message(
             f"Saved {result.data.shape[2]} short-axis slices: " + " | ".join(saved)
@@ -529,11 +634,18 @@ def interactive_convert_to_short_axis(
     slice_spacing_mm: float = 8.0,
     pixel_spacing_mm: float | None = None,
     fov_mm: tuple[float, float] | None = None,
+    orientation_reference_path: str | Path | None = None,
+    points_output_path: str | Path | None = None,
 ) -> ShortAxisPlanner:
     """Open the interactive planner and return its state after the window closes."""
     _ensure_interactive_backend()
     image = load_nifti(image_path)
     mask = load_nifti(mask_path, dtype=None) if mask_path else None
+    orientation_reference = (
+        load_nifti(orientation_reference_path)
+        if orientation_reference_path
+        else None
+    )
     planner = ShortAxisPlanner(
         image,
         output_path,
@@ -543,6 +655,100 @@ def interactive_convert_to_short_axis(
         slice_spacing_mm,
         pixel_spacing_mm,
         fov_mm,
+        orientation_reference,
+        points_output_path,
     )
     planner.show()
     return planner
+
+
+def convert_to_short_axis_from_saved_points(
+    *,
+    image_path: str | Path,
+    output_path: str | Path,
+    points_path: str | Path,
+    mask_path: str | Path | None = None,
+    mask_output_path: str | Path | None = None,
+    geometry_output_path: str | Path | None = None,
+) -> None:
+    """Regenerate short-axis outputs from a saved plan without opening a GUI."""
+
+    image = load_nifti(image_path)
+    mask = load_nifti(mask_path, dtype=None) if mask_path else None
+    if mask is not None:
+        validate_mask_grid(image, mask)
+    saved = load_short_axis_points(
+        points_path,
+        source_shape=image.data.shape,
+        source_affine=image.affine,
+    )
+    sampled = generate_short_axis_stack(
+        image.data,
+        image.affine,
+        saved.plan,
+        saved.apex_t_mm,
+        saved.base_t_mm,
+        saved.slice_spacing_mm,
+        saved.pixel_spacing_mm,
+        saved.fov_mm,
+        interpolation_order=1,
+        reference_x_axis=saved.reference_x_axis,
+    )
+    output_path = Path(output_path).expanduser().resolve()
+    save_nifti(
+        output_path,
+        sampled.data.astype(np.float32),
+        saved.display_affine,
+        image.header,
+    )
+    geometry_path = (
+        Path(geometry_output_path).expanduser().resolve()
+        if geometry_output_path
+        else default_geometry_path(output_path)
+    )
+    displayed = StackResult(sampled.data, saved.display_affine, sampled.positions_mm)
+    save_planning_geometry(
+        geometry_path,
+        plan=saved.plan,
+        stack=displayed,
+        apex_t_mm=saved.apex_t_mm,
+        base_t_mm=saved.base_t_mm,
+        source_image_path=image.path,
+        short_axis_path=output_path,
+        sampling_affine=sampled.affine,
+        reference_long_axis_difference_deg=saved.reference_long_axis_difference_deg,
+        orientation_reference_path=saved.orientation_reference_path,
+    )
+    if mask is not None:
+        mask_result = generate_short_axis_stack(
+            mask.data,
+            mask.affine,
+            saved.plan,
+            saved.apex_t_mm,
+            saved.base_t_mm,
+            saved.slice_spacing_mm,
+            saved.pixel_spacing_mm,
+            saved.fov_mm,
+            interpolation_order=0,
+            reference_x_axis=saved.reference_x_axis,
+        )
+        target = (
+            Path(mask_output_path).expanduser().resolve()
+            if mask_output_path
+            else output_path.with_name(
+                output_path.name.replace(".nii.gz", "_mask.nii.gz")
+                if output_path.name.endswith(".nii.gz")
+                else output_path.stem + "_mask.nii"
+            )
+        )
+        dtype = (
+            mask.data.dtype
+            if np.issubdtype(mask.data.dtype, np.integer)
+            else np.int16
+        )
+        save_nifti(
+            target,
+            np.rint(mask_result.data).astype(dtype),
+            saved.display_affine,
+            mask.header,
+        )

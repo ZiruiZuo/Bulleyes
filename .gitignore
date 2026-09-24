@@ -3,3 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.png
+.idea/
+.pytest-*/
+*.egg-info/
+outputs/

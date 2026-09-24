@@ -32,6 +32,9 @@ def save_planning_geometry(
     base_t_mm: float,
     source_image_path: str | Path,
     short_axis_path: str | Path,
+    sampling_affine: np.ndarray | None = None,
+    reference_long_axis_difference_deg: float | None = None,
+    orientation_reference_path: str | Path | None = None,
 ) -> Path:
     """Save the complete spatial contract needed by downstream bullseye tools."""
 
@@ -72,8 +75,35 @@ def save_planning_geometry(
             stack.positions_mm, dtype=float
         ).tolist(),
         "short_axis_affine": np.asarray(stack.affine, dtype=float).tolist(),
+        "short_axis_sampling_affine": np.asarray(
+            stack.affine if sampling_affine is None else sampling_affine,
+            dtype=float,
+        ).tolist(),
         "short_axis_shape": [int(value) for value in stack.data.shape],
     }
+    sampling_matrix = np.asarray(
+        stack.affine if sampling_affine is None else sampling_affine,
+        dtype=float,
+    )
+    payload["short_axis_display_translation_world_mm"] = (
+        np.asarray(stack.affine, dtype=float)[:3, 3] - sampling_matrix[:3, 3]
+    ).tolist()
+    if orientation_reference_path is not None:
+        unreferenced_x = unit(plan.vla_normal, "unreferenced short-axis x axis")
+        signed_sine = float(
+            np.dot(long_axis, np.cross(unreferenced_x, sa_x))
+        )
+        cosine = float(np.dot(unreferenced_x, sa_x))
+        payload["orientation_reference_path"] = str(
+            Path(orientation_reference_path).expanduser().resolve()
+        )
+        payload["inplane_rotation_from_unreferenced_deg"] = float(
+            np.degrees(np.arctan2(signed_sine, cosine))
+        )
+        if reference_long_axis_difference_deg is not None:
+            payload["reference_long_axis_difference_deg"] = float(
+                reference_long_axis_difference_deg
+            )
 
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,10 +11,11 @@ from scipy import ndimage
 
 from ..territory.geometry import (
     aligned_angles,
-    estimate_lv_center,
+    estimate_lv_centers,
     normalize_six_segment_angles,
 )
 from ..territory.models import BullseyeResult, LandmarkPair, StudyData
+from ..territory.mapping import remove_deleted_slices_from_radial_axis
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ def compute_slice_distance_profiles(
     angle_count: int = 360,
     angular_smoothing_sigma_deg: float = 1.5,
     six_segment_warp: bool = True,
+    center_overrides: Iterable[tuple[float, float] | None] | None = None,
 ) -> NDArray[np.float64]:
     """Average myocardial distance values in the same angular bins as territory."""
 
@@ -63,6 +66,10 @@ def compute_slice_distance_profiles(
 
     profiles = np.full((study.slice_count, angle_count), np.nan, dtype=float)
     sigma_bins = angular_smoothing_sigma_deg / 360.0 * angle_count
+    centers = estimate_lv_centers(
+        study.territory_mask > 0,
+        center_overrides=center_overrides,
+    )
     for slice_index, pair in enumerate(landmarks):
         if pair is None:
             continue
@@ -71,7 +78,7 @@ def compute_slice_distance_profiles(
         )
         if not myocardial.any():
             continue
-        center = estimate_lv_center(study.territory_mask[slice_index] > 0)
+        center = tuple(centers[slice_index])
         y, x = np.nonzero(myocardial)
         values = distance[slice_index, y, x]
         angles = aligned_angles(x, y, center, pair.aip, pair.iip)
@@ -118,6 +125,24 @@ def _radial_interpolate(
     return output
 
 
+def _mean_apical_segment_distances(
+    distance_mm: ArrayLike,
+    segment_ids: ArrayLike,
+) -> float:
+    """Return an equal-segment mean across AHA segments 13 through 16."""
+
+    distance = np.asarray(distance_mm, dtype=float)
+    segments = np.asarray(segment_ids)
+    if distance.shape != segments.shape:
+        raise ValueError("distance_mm and segment_ids must have matching shapes")
+    means = []
+    for segment_id in range(13, 17):
+        values = distance[(segments == segment_id) & np.isfinite(distance)]
+        if values.size:
+            means.append(float(np.mean(values)))
+    return float(np.mean(means)) if means else float("nan")
+
+
 def compute_distance_bullseye(
     study: StudyData,
     short_axis_distance_mm: ArrayLike,
@@ -128,6 +153,9 @@ def compute_distance_bullseye(
     angular_smoothing_sigma_deg: float = 1.5,
     radial_smoothing_sigma: float = 1.5,
     six_segment_warp: bool = True,
+    deleted_slice_indices: Iterable[int] = (),
+    rescale_deleted_base: bool = True,
+    center_overrides: Iterable[tuple[float, float] | None] | None = None,
 ) -> DistanceBullseyeResult:
     """Create a distance heatmap exactly aligned with a territory bullseye."""
 
@@ -144,22 +172,29 @@ def compute_distance_bullseye(
         angle_count=len(reference_bullseye.angles),
         angular_smoothing_sigma_deg=angular_smoothing_sigma_deg,
         six_segment_warp=six_segment_warp,
+        center_overrides=center_overrides,
     )
-    dense = _radial_interpolate(
+    radial_profiles, radial_source_radii = remove_deleted_slices_from_radial_axis(
         profiles,
         source_radii_array,
+        deleted_slice_indices,
+        rescale_retained_base=rescale_deleted_base,
+    )
+    if not np.isfinite(radial_profiles).any():
+        raise ValueError("No valid distance values remain after deletion")
+    dense = _radial_interpolate(
+        radial_profiles,
+        radial_source_radii,
         np.asarray(reference_bullseye.radial_positions, dtype=float),
     )
     if radial_smoothing_sigma > 0:
         dense = ndimage.gaussian_filter1d(
             dense, sigma=radial_smoothing_sigma, axis=0, mode="nearest"
         )
-
-    apex_distance = np.nan
-    for profile in profiles:
-        if np.isfinite(profile).any():
-            apex_distance = float(np.nanmean(profile))
-            break
+    apex_distance = _mean_apical_segment_distances(
+        dense,
+        reference_bullseye.aha_segment_ids,
+    )
     return DistanceBullseyeResult(
         distance_mm=dense,
         radial_positions=np.asarray(reference_bullseye.radial_positions, dtype=float),

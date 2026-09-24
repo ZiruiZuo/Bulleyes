@@ -11,7 +11,9 @@ except ModuleNotFoundError:  # pragma: no cover - used only by Python 3.10
     import tomli as tomllib
 
 
-WorkflowName = Literal["short-axis", "bullseye", "pipeline"]
+WorkflowName = Literal[
+    "short-axis", "bullseye", "pipeline", "lge-bullseye", "lge-mask-bullseye"
+]
 
 
 class ConfigError(ValueError):
@@ -37,9 +39,11 @@ class CaseConfig:
 class ShortAxisConfig:
     source_mr: Path | None
     source_mask: Path | None = None
+    orientation_reference: Path | None = None
     slice_spacing_mm: float = 8.0
     pixel_spacing_mm: float | None = None
     fov_mm: tuple[float, float] | None = None
+    reuse_saved_points: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,14 +68,42 @@ class BullseyeConfig:
     coronary_default_color: str | None = None
     coronary_label_colors: dict[int, str] = field(default_factory=dict)
     coronary_label_names: dict[int, str] = field(default_factory=lambda: {
-        2: "Coronary LAD", 3: "Coronary LCX", 4: "Coronary RCA"
+        1: "Coronary LAD", 2: "Coronary LCX", 3: "Coronary RCA"
     })
     coronary_linewidth: float = 1.8
-    distance_vessel_labels: tuple[int, ...] = (2, 3, 4)
+    distance_vessel_labels: tuple[int, ...] = (1, 2, 3)
     distance_colormap: str = "turbo"
     distance_value_range_mm: tuple[float, float] | None = None
     apex_territory: int | None = None
     show_final_figure: bool = True
+    reuse_saved_points: bool = False
+
+
+@dataclass(frozen=True)
+class LgeBullseyeConfig:
+    lge: Path | None
+    mask: Path | None
+    angle_count: int = 360
+    radial_count: int = 300
+    angular_smoothing_sigma_deg: float = 1.5
+    radial_smoothing_sigma: float = 1.5
+    six_segment_warp: bool = True
+    scar_sd_multiplier: float = 5.0
+    normal_roi_min_voxels: int = 20
+    reuse_saved_points: bool = False
+
+
+@dataclass(frozen=True)
+class LgeMaskBullseyeConfig:
+    lge: Path | None
+    mask: Path | None
+    lge_scar_mask: Path | None
+    angle_count: int = 360
+    radial_count: int = 300
+    angular_smoothing_sigma_deg: float = 1.5
+    radial_smoothing_sigma: float = 1.5
+    six_segment_warp: bool = True
+    reuse_saved_points: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,6 +111,12 @@ class AppConfig:
     case: CaseConfig
     short_axis: ShortAxisConfig
     bullseye: BullseyeConfig
+    lge_bullseye: LgeBullseyeConfig = field(
+        default_factory=lambda: LgeBullseyeConfig(lge=None, mask=None)
+    )
+    lge_mask_bullseye: LgeMaskBullseyeConfig = field(
+        default_factory=lambda: LgeMaskBullseyeConfig(lge=None, mask=None, lge_scar_mask=None)
+    )
 
 
 def _path(value: Any, base_directory: Path) -> Path | None:
@@ -108,6 +146,13 @@ def _positive_integer(errors: list[str], name: str, value: Any) -> None:
         errors.append(f"{name} must be a positive integer")
 
 
+def _minimum_integer(
+    errors: list[str], name: str, value: Any, minimum: int
+) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        errors.append(f"{name} must be an integer of at least {minimum}")
+
+
 def _positive_number(errors: list[str], name: str, value: Any) -> None:
     if (
         isinstance(value, bool)
@@ -126,6 +171,23 @@ def _nonnegative_number(errors: list[str], name: str, value: Any) -> None:
         or value < 0
     ):
         errors.append(f"{name} must be nonnegative")
+
+
+def _validate_lge_mapping_options(
+    errors: list[str], prefix: str, options: Any
+) -> None:
+    _minimum_integer(errors, f"{prefix}.angle_count", options.angle_count, 4)
+    _minimum_integer(errors, f"{prefix}.radial_count", options.radial_count, 3)
+    _nonnegative_number(
+        errors,
+        f"{prefix}.angular_smoothing_sigma_deg",
+        options.angular_smoothing_sigma_deg,
+    )
+    _nonnegative_number(
+        errors,
+        f"{prefix}.radial_smoothing_sigma",
+        options.radial_smoothing_sigma,
+    )
 
 
 def _increasing_pair(errors: list[str], name: str, value: Any) -> None:
@@ -181,14 +243,39 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
             ("bullseye.world_myocardium_mask", config.bullseye.world_myocardium_mask),
         ):
             _input_error(errors, name, path)
+    elif workflow == "lge-bullseye":
+        for name, path in (
+            ("lge_bullseye.lge", config.lge_bullseye.lge),
+            ("lge_bullseye.mask", config.lge_bullseye.mask),
+        ):
+            _input_error(errors, name, path)
+    elif workflow == "lge-mask-bullseye":
+        for name, path in (
+            ("lge_mask_bullseye.lge", config.lge_mask_bullseye.lge),
+            ("lge_mask_bullseye.mask", config.lge_mask_bullseye.mask),
+            ("lge_mask_bullseye.lge_scar_mask", config.lge_mask_bullseye.lge_scar_mask),
+        ):
+            _input_error(errors, name, path)
     else:
-        errors.append(f"workflow must be one of short-axis, bullseye, pipeline; got {workflow!r}")
+        errors.append(
+            "workflow must be one of short-axis, bullseye, pipeline, "
+            f"lge-bullseye, lge-mask-bullseye; got {workflow!r}"
+        )
 
     _positive_number(errors, "short_axis.slice_spacing_mm", config.short_axis.slice_spacing_mm)
     if config.short_axis.pixel_spacing_mm is not None:
         _positive_number(errors, "short_axis.pixel_spacing_mm", config.short_axis.pixel_spacing_mm)
     if config.short_axis.fov_mm is not None:
         _positive_pair(errors, "short_axis.fov_mm", config.short_axis.fov_mm)
+    if (
+        workflow in ("short-axis", "pipeline")
+        and config.short_axis.orientation_reference is not None
+    ):
+        _input_error(
+            errors,
+            "short_axis.orientation_reference",
+            config.short_axis.orientation_reference,
+        )
 
     _positive_integer(errors, "bullseye.angle_count", config.bullseye.angle_count)
     _positive_integer(errors, "bullseye.radial_count", config.bullseye.radial_count)
@@ -227,6 +314,22 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
     if config.bullseye.apex_territory not in (None, 1, 2, 3):
         errors.append("bullseye.apex_territory must be 1, 2, or 3")
 
+    _validate_lge_mapping_options(errors, "lge_bullseye", config.lge_bullseye)
+    _validate_lge_mapping_options(
+        errors, "lge_mask_bullseye", config.lge_mask_bullseye
+    )
+    _positive_number(
+        errors,
+        "lge_bullseye.scar_sd_multiplier",
+        config.lge_bullseye.scar_sd_multiplier,
+    )
+    if (
+        isinstance(config.lge_bullseye.normal_roi_min_voxels, bool)
+        or not isinstance(config.lge_bullseye.normal_roi_min_voxels, int)
+        or config.lge_bullseye.normal_roi_min_voxels < 2
+    ):
+        errors.append("lge_bullseye.normal_roi_min_voxels must be an integer of at least 2")
+
     if errors:
         raise ConfigError(errors)
 
@@ -241,6 +344,8 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
     case_data = data.get("case", {})
     short_axis_data = data.get("short_axis", {})
     bullseye_data = data.get("bullseye", {})
+    lge_bullseye_data = data.get("lge_bullseye", {})
+    lge_mask_bullseye_data = data.get("lge_mask_bullseye", {})
 
     config = AppConfig(
         case=CaseConfig(
@@ -251,6 +356,10 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
         short_axis=ShortAxisConfig(
             source_mr=_path(short_axis_data.get("source_mr"), base_directory),
             source_mask=_path(short_axis_data.get("source_mask"), base_directory),
+            orientation_reference=_path(
+                short_axis_data.get("orientation_reference"), base_directory
+            ),
+            reuse_saved_points=short_axis_data.get("reuse_saved_points", False),
             slice_spacing_mm=short_axis_data.get("slice_spacing_mm", 8.0),
             pixel_spacing_mm=short_axis_data.get("pixel_spacing_mm"),
             fov_mm=_pair(short_axis_data.get("fov_mm")),
@@ -294,11 +403,11 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
             coronary_label_names=(
                 _integer_keys(bullseye_data["coronary_label_names"])
                 if "coronary_label_names" in bullseye_data
-                else {2: "Coronary LAD", 3: "Coronary LCX", 4: "Coronary RCA"}
+                else {1: "Coronary LAD", 2: "Coronary LCX", 3: "Coronary RCA"}
             ),
             coronary_linewidth=bullseye_data.get("coronary_linewidth", 1.8),
             distance_vessel_labels=tuple(
-                bullseye_data.get("distance_vessel_labels", (2, 3, 4))
+                bullseye_data.get("distance_vessel_labels", (1, 2, 3))
             ),
             distance_colormap=bullseye_data.get("distance_colormap", "turbo"),
             distance_value_range_mm=_pair(
@@ -306,6 +415,48 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
             ),
             apex_territory=bullseye_data.get("apex_territory"),
             show_final_figure=bullseye_data.get("show_final_figure", True),
+            reuse_saved_points=bullseye_data.get("reuse_saved_points", False),
+        ),
+        lge_bullseye=LgeBullseyeConfig(
+            lge=_path(lge_bullseye_data.get("lge"), base_directory),
+            mask=_path(lge_bullseye_data.get("mask"), base_directory),
+            angle_count=lge_bullseye_data.get("angle_count", 360),
+            radial_count=lge_bullseye_data.get("radial_count", 300),
+            angular_smoothing_sigma_deg=lge_bullseye_data.get(
+                "angular_smoothing_sigma_deg", 1.5
+            ),
+            radial_smoothing_sigma=lge_bullseye_data.get(
+                "radial_smoothing_sigma", 1.5
+            ),
+            six_segment_warp=lge_bullseye_data.get("six_segment_warp", True),
+            scar_sd_multiplier=lge_bullseye_data.get(
+                "scar_sd_multiplier", 5.0
+            ),
+            normal_roi_min_voxels=lge_bullseye_data.get(
+                "normal_roi_min_voxels", 20
+            ),
+            reuse_saved_points=lge_bullseye_data.get(
+                "reuse_saved_points", False
+            ),
+        ),
+        lge_mask_bullseye=LgeMaskBullseyeConfig(
+            lge=_path(lge_mask_bullseye_data.get("lge"), base_directory),
+            mask=_path(lge_mask_bullseye_data.get("mask"), base_directory),
+            lge_scar_mask=_path(
+                lge_mask_bullseye_data.get("lge_scar_mask"), base_directory
+            ),
+            angle_count=lge_mask_bullseye_data.get("angle_count", 360),
+            radial_count=lge_mask_bullseye_data.get("radial_count", 300),
+            angular_smoothing_sigma_deg=lge_mask_bullseye_data.get(
+                "angular_smoothing_sigma_deg", 1.5
+            ),
+            radial_smoothing_sigma=lge_mask_bullseye_data.get(
+                "radial_smoothing_sigma", 1.5
+            ),
+            six_segment_warp=lge_mask_bullseye_data.get("six_segment_warp", True),
+            reuse_saved_points=lge_mask_bullseye_data.get(
+                "reuse_saved_points", False
+            ),
         ),
     )
     validate_config(config, workflow)

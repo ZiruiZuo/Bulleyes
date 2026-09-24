@@ -2,11 +2,10 @@
 
 将心脏 MR 转换为短轴堆栈，并生成患者特异性的 AHA-17 供血区牛眼图、冠脉投影和冠脉距离牛眼图。
 
-项目支持三种用法：
-
-1. 只生成短轴；
-2. 使用已有短轴数据生成牛眼图；
-3. 一次完成“原始 MR → 短轴 → 牛眼图”。
+项目提供五个独立工作流/命令：只生成短轴、使用已有短轴数据生成牛眼图、一次完成“原始
+MR → 短轴 → 牛眼图”、完整 LGE 强度与 scar 牛眼图，以及使用已有 scar mask 的外部 scar
+牛眼图。后两种 LGE 模式分别对应 `cardiac-lge-bullseye` 和
+`cardiac-lge-mask-bullseye`。
 
 ## 目录结构
 
@@ -41,12 +40,14 @@ Set-Location E:\ZZR\Code\Tools\Bulleyes
 python -m pip install -e .
 ```
 
-安装后会提供三个命令：
+安装后会提供五个命令：
 
 ```text
 cardiac-short-axis   只生成短轴
 cardiac-bullseye     只生成牛眼图
 cardiac-pipeline     运行完整流程
+cardiac-lge-bullseye 由短轴 LGE 和同网格心肌 mask 生成强度与 scar 牛眼图
+cardiac-lge-mask-bullseye --config <file> 由已有 scar mask 生成 LGE 牛眼图
 ```
 
 可以用以下命令确认安装是否成功：
@@ -55,99 +56,338 @@ cardiac-pipeline     运行完整流程
 cardiac-short-axis --help
 cardiac-bullseye --help
 cardiac-pipeline --help
+cardiac-lge-bullseye --help
+cardiac-lge-mask-bullseye --help
 ```
 
-## 准备配置文件
+## 配置文件通用规则
 
-复制示例配置：
+建议每条命令使用一份独立的 TOML 配置文件。配置文件只需要包含当前命令用到的
+section，不需要把五种流程的配置全部写在同一个文件里。
+
+- 每份配置都必须有 `[case]`；`case.id` 是输出文件名前缀。
+- `case.output_directory` 是结果保存目录，不存在时会自动创建。
+- 相对路径以 TOML 文件所在目录为基准，而不是以 PowerShell 当前目录为基准。
+- Windows 路径建议使用 TOML 单引号和正斜杠，例如
+  `'D:/data/patient_043/lge.nii.gz'`。
+- 下列示例假设配置文件位于项目根目录，数据放在 `inputs/` 下；实际使用时请替换为
+  自己的数据路径。
+- 所有可选参数和默认值见 [`config.example.toml`](config.example.toml)。
+
+## 用法一：只生成短轴
+
+命令：
 
 ```powershell
-Copy-Item .\config.example.toml .\case.toml
+cardiac-short-axis --config .\case_short_axis.toml
 ```
 
-然后编辑 `case.toml`。所有相对路径均以 `case.toml` 所在目录为基准。Windows 路径建议使用 TOML 单引号和正斜杠，例如：
+需要的数据：
+
+- `source_mr`：需要重格式化的原始 MR，必需。
+- `source_mask`：与原始 MR 同网格的供血区或其他标签 mask，可选；填写后才会同步生成短轴 mask。
+- `orientation_reference`：参考 LGE 短轴，可选；仅用于确定层内旋转方向。
+
+`case_short_axis.toml`：
 
 ```toml
 [case]
 id = 'patient_043'
-output_directory = 'outputs'
+output_directory = 'outputs/patient_043_short_axis'
 
 [short_axis]
 source_mr = 'inputs/patient_043_mr.nii.gz'
 source_mask = 'inputs/patient_043_territory.nii.gz'
 
+# 以下参数可省略。
+# reuse_saved_points = false
+# orientation_reference = 'inputs/patient_043_lge_sax.nii.gz'
+# slice_spacing_mm = 8.0
+# pixel_spacing_mm = 1.25
+# fov_mm = [192.0, 192.0]
+```
+
+交互窗口依次完成 Apex/二尖瓣中心选择、长轴确认和 Apex–Base 覆盖范围确认。
+
+输出：
+
+```text
+patient_043_short_axis.nii.gz
+patient_043_short_axis_mask.nii.gz   # 仅在配置 source_mask 时生成
+patient_043_geometry.json
+patient_043_short_axis_points.json
+```
+
+程序每次成功保存短轴时都会写出 `short_axis_points.json`。默认
+`reuse_saved_points = false`，仍会重新打开规划窗口；改为 `true` 后直接读取该文件，
+跳过 Apex/二尖瓣中心和 Apex–Base 范围选择，并用相同短轴几何重采样新的 label mask。
+源 MR 的 shape 和 affine 必须与保存关键点时一致，否则程序会拒绝复用。
+
+## 用法二：使用已有短轴数据生成牛眼图
+
+命令：
+
+```powershell
+cardiac-bullseye --config .\case_bullseye.toml
+```
+
+需要的数据：
+
+- 已有短轴 MR、短轴供血区 mask，以及同次短轴规划生成的 `geometry.json`。
+- 世界坐标系下的冠脉 mask 和心肌 mask。
+- `short_axis_mr`、`short_axis_mask` 和 `geometry_json` 必须来自同一病例、同一次短轴规划。
+
+`geometry.json` 保存短轴体素坐标与原始世界坐标之间的关系，程序需要它把世界空间
+的冠脉和心肌数据投影到短轴牛眼图中，因此不能用其他病例或其他重采样产生的文件代替。
+
+`case_bullseye.toml`：
+
+```toml
+[case]
+id = 'patient_043'
+output_directory = 'outputs/patient_043_bullseye'
+
+[bullseye]
+short_axis_mr = 'outputs/patient_043_short_axis/patient_043_short_axis.nii.gz'
+short_axis_mask = 'outputs/patient_043_short_axis/patient_043_short_axis_mask.nii.gz'
+geometry_json = 'outputs/patient_043_short_axis/patient_043_geometry.json'
+coronary_mask = 'inputs/patient_043_coronary.nii.gz'
+world_myocardium_mask = 'inputs/patient_043_myocardium.nii.gz'
+
+# 默认 false；改为 true 后直接读取同一输出目录中的 patient_043_landmarks.json。
+reuse_saved_points = false
+
+# 下面是常用可选参数；省略时使用程序默认值。
+territory_label_map = { 2 = 1, 3 = 2, 4 = 3 }
+coronary_mask_is_centerline = false
+distance_vessel_labels = [2, 3, 4]
+show_final_figure = true
+```
+
+程序逐层重新选择 AIP 和 IIP。滚轮缩放，中键拖动平移，`Fit` 恢复视野；
+`Accept` 接受本层，`Redo` 重选，`Skip` 跳过本层，`Delete` 仅用于从基底端连续
+移除截面。默认每次运行都会忽略旧 landmark 并覆盖同名结果；设置
+`reuse_saved_points = true` 后会保留 Skip/Delete 状态并完全跳过标注窗口。
+保存文件的层数、图像尺寸和点坐标必须与当前短轴图兼容。
+
+每层首先按自动规则显示绿色 `+` 质心。若位置不合适，可用鼠标左键直接拖动
+绿色 `+` 修正；在其他位置左键单击仍用于依次选择 AIP、IIP。手动质心作为覆盖值
+写入 landmark JSON。即使随后点击 `Skip`，该层的手动质心仍会保留；`Redo` 会
+同时清空本层 AIP/IIP 并恢复自动质心，`Delete` 则丢弃本层手动质心。
+`reuse_saved_points = true` 会同时复用 AIP/IIP、Skip 状态和手动质心。旧版不含
+质心字段的 landmark JSON 仍兼容，并继续使用自动质心。
+
+几何中心按整套短轴逐层计算：闭合心肌层使用其包围的 LV 心腔质心；C 形等不闭合
+心肌层不再使用心肌自身质心，而是复制层索引最近的闭合心肌层中心。若两侧距离
+相同，优先采用索引较大（更靠基底）的闭合层。空 mask 层不参与匹配；如果整套
+非空心肌层都没有闭合心腔，程序会在标注/计算前报错。该中心同时用于界面中的
+绿色十字、角度映射和后续牛眼图计算。
+
+程序把第一张含有心肌供血区 mask 的层映射到牛眼图 `r=1`，把最后一个未
+`Delete` 的基底层映射到 `r=4`，并在两者之间分为三个等长的 AHA 环。
+Territory、距离图和冠脉叠加共用这套绘图半径；冠脉中映射到 `r<1` 的点不显示。
+第17节段的供血区由13–16节段的平均概率决定，距离值取13–16四个节段均值。
+
+如果要与未配准的 LGE scar 牛眼图比较，必须人工保证两套短轴图的第一张有 mask
+层以及最后一个未 `Delete` 基底层分别对应。这是标准化 AHA 坐标对应，不是体素级
+配准。
+
+输出：
+
+```text
+patient_043_landmarks.json
+patient_043_bullseye.png
+patient_043_distance_bullseye.png
+patient_043_distance_world.nii.gz
+patient_043_distance_short_axis.nii.gz
+```
+
+## 用法三：从原始 MR 一次完成短轴和牛眼图
+
+命令：
+
+```powershell
+cardiac-pipeline --config .\case_pipeline.toml
+```
+
+需要的数据：
+
+- 原始 MR 和与其同网格的供血区 mask。
+- 世界坐标系下的冠脉 mask 和心肌 mask。
+- 不需要填写 `bullseye.short_axis_mr`、`short_axis_mask` 或 `geometry_json`；程序会直接使用本次生成的短轴结果。
+
+`case_pipeline.toml`：
+
+```toml
+[case]
+id = 'patient_043'
+output_directory = 'outputs/patient_043_pipeline'
+
+[short_axis]
+source_mr = 'inputs/patient_043_mr.nii.gz'
+source_mask = 'inputs/patient_043_territory.nii.gz'
+# orientation_reference = 'inputs/patient_043_lge_sax.nii.gz'
+
 [bullseye]
 coronary_mask = 'inputs/patient_043_coronary.nii.gz'
 world_myocardium_mask = 'inputs/patient_043_myocardium.nii.gz'
+territory_label_map = { 2 = 1, 3 = 2, 4 = 3 }
+coronary_mask_is_centerline = false
+distance_vessel_labels = [2, 3, 4]
+show_final_figure = true
 ```
 
-建议始终填写非空的 `case.id`，它会成为所有输出文件的前缀。完整参数及注释见 [`config.example.toml`](config.example.toml)。
-
-### 三种模式所需输入
-
-| 模式 | 必需配置 |
-| --- | --- |
-| 只生成短轴 | `short_axis.source_mr`；需要同步生成 mask 时再填写 `short_axis.source_mask` |
-| 只生成牛眼图 | `bullseye.short_axis_mr`、`short_axis_mask`、`geometry_json`、`coronary_mask`、`world_myocardium_mask` |
-| 完整流程 | `short_axis.source_mr`、`source_mask`，以及 `bullseye.coronary_mask`、`world_myocardium_mask` |
-
-`cardiac-pipeline` 会直接使用本次刚生成的短轴文件，因此不会读取配置中的 `bullseye.short_axis_mr`、`short_axis_mask` 和 `geometry_json`。
-
-## 用法一：只生成短轴
-
-```powershell
-cardiac-short-axis --config .\case.toml
-```
-
-交互窗口分为三步：
-
-1. 在轴位图上依次选择 Apex 和二尖瓣中心；
-2. 在重格式化视图中再次确认 Apex 和二尖瓣中心；
-3. 拖动 Apex/Base 边界线确定覆盖范围，然后点击 `Save`。
-
-主要输出：
+该命令先执行用法一的短轴规划，再直接执行用法二的 AIP/IIP 标注和牛眼图计算。
+输出：
 
 ```text
-<case.id>_short_axis.nii.gz
-<case.id>_short_axis_mask.nii.gz   # 配置 source_mask 时生成
-<case.id>_geometry.json
+patient_043_short_axis.nii.gz
+patient_043_short_axis_mask.nii.gz
+patient_043_geometry.json
+patient_043_landmarks.json
+patient_043_bullseye.png
+patient_043_distance_bullseye.png
+patient_043_distance_world.nii.gz
+patient_043_distance_short_axis.nii.gz
 ```
 
-## 用法二：只生成牛眼图
+## 用法四：完整 LGE 流程——手动画正常心肌 ROI 并计算 scar
 
-先在 `[bullseye]` 中填写已有短轴 MR、短轴供血区 mask 和同次规划生成的 `geometry.json`，然后运行：
+命令：
 
 ```powershell
-cardiac-bullseye --config .\case.toml
+cardiac-lge-bullseye --config .\case_lge.toml
 ```
 
-程序会逐层要求选择 AIP 和 IIP。左键选择点，右键撤销；`Accept` 接受当前层，`Redo` 重选，`Skip` 跳过当前层。
+需要的数据：
 
-主要输出：
+- Apex → Base 排列的短轴 LGE。
+- 直接在该 LGE 网格上标注的心肌 mask；支持标量 NIfTI/NRRD 和 vector `.seg.nrrd`。
+- LGE 与心肌 mask 的 size、spacing、origin 和 direction 必须一致；程序不会自动重采样。
+
+`case_lge.toml`：
+
+```toml
+[case]
+id = 'patient_043'
+output_directory = 'outputs/patient_043_lge'
+
+[lge_bullseye]
+lge = 'inputs/patient_043_lge_sax.nii.gz'
+mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
+
+# 以下均为可选参数，右侧是默认值。
+angle_count = 360
+radial_count = 300
+angular_smoothing_sigma_deg = 1.5
+radial_smoothing_sigma = 1.5
+six_segment_warp = true
+scar_sd_multiplier = 5.0
+normal_roi_min_voxels = 20
+reuse_saved_points = false
+```
+
+流程分为两步：
+
+1. 每层重新选择 AIP/IIP，可缩放和平移，也可使用 `Skip` 或从基底端连续 `Delete`。
+   绿色 `+` 为自动质心，可直接拖动修正；在 `Skip` 前完成的质心修正仍会保存。
+2. 在每个保留层用画刷选择远端正常心肌 ROI。ROI 自动与心肌 mask 求交；少于
+   `normal_roi_min_voxels` 个有效体素时会提示。程序逐层使用
+   `mean + scar_sd_multiplier × sample std` 计算 scar 阈值。
+
+默认每次运行都会忽略以前的 landmark 和 ROI 标注，从空白状态重新选择。
+设置 `reuse_saved_points = true` 后，只复用同一输出目录中的
+`patient_043_lge_landmarks.json` 并跳过 AIP/IIP 窗口；正常心肌 ROI 仍然每次重新选择。
+LGE 强度图和 scar 的 AHA 1–16 分段采用与 Territory 相同的逐层几何中心规则；
+已有 AIP/IIP JSON 的坐标格式不变，可继续复用。
+
+输出：
 
 ```text
-<case.id>_bullseye.png
-<case.id>_distance_bullseye.png
-<case.id>_distance_world.nii.gz
-<case.id>_distance_short_axis.nii.gz
+patient_043_lge_landmarks.json
+patient_043_lge_intensity_bullseye.npz
+patient_043_lge_intensity_bullseye.png
+patient_043_lge_normal_rois.json
+patient_043_lge_scar_mask.nii.gz
+patient_043_lge_scar_segments.csv
+patient_043_lge_scar_bullseye.png
 ```
 
-## 用法三：运行完整流程
+scar 牛眼图使用 AHA 1–16 的原始体素比例；0% 为白色，比例越高越趋向橙红色。
+PNG 使用安全覆盖逻辑，scar NIfTI 保留原 LGE 的完整物理网格。
+
+## 用法五：使用已有 scar mask 生成 LGE 牛眼图
+
+这条命令适用于 scar mask 已由独立 `lgeMask` 工具或其他方法生成的情况。它不会
+再次选择正常心肌 ROI，也不会重新计算 scar。
+
+命令：
 
 ```powershell
-cardiac-pipeline --config .\case.toml
+cardiac-lge-mask-bullseye --config .\case_lge_mask.toml
 ```
 
-该命令先执行短轴规划，再将新生成的短轴 MR、mask 和几何信息直接传入牛眼图流程。最终输出包含上述 3 个短轴文件和 4 个牛眼图/距离文件。
+需要的数据：
+
+- Apex → Base 排列的短轴 LGE。
+- 心肌 mask。
+- 已有的二值 scar mask。
+- 三份数据的 size、spacing、origin 和 direction 必须完全一致；程序不会重采样。
+- scar 必须完全位于心肌内，否则程序在打开标注窗口前报错。
+
+心肌 mask 支持标量 NIfTI、标量 NRRD 和 vector/component `.seg.nrrd`；对于
+`.seg.nrrd`，任一 component 非零即视为心肌。
+
+`case_lge_mask.toml`：
+
+```toml
+[case]
+id = 'patient_043'
+output_directory = 'outputs/patient_043_lge_mask_bullseye'
+
+[lge_mask_bullseye]
+lge = 'inputs/patient_043_lge_sax.nii.gz'
+mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
+lge_scar_mask = 'inputs/patient_043_lge_scar_mask.nii.gz'
+
+# 以下均为可选参数，右侧是默认值。
+angle_count = 360
+radial_count = 300
+angular_smoothing_sigma_deg = 1.5
+radial_smoothing_sigma = 1.5
+six_segment_warp = true
+reuse_saved_points = false
+```
+
+程序只要求重新选择 AIP/IIP；不会进入正常心肌 ROI 界面。强度图和 scar 图均只
+计算并显示 AHA 1–16，不计算或显示 segment 17。
+选择 AIP/IIP 时同样会先显示自动质心；可拖动绿色 `+` 修正，并可在修正后点击
+`Skip` 保留该层手动质心。
+设置 `reuse_saved_points = true` 后直接读取同一输出目录中的
+`patient_043_lge_landmarks.json`，不会打开 AIP/IIP 标注窗口。
+本模式同样对不闭合心肌层使用最近闭合层的 LV 心腔质心，且不改变已保存 landmark
+文件的格式。
+
+输出恰好为：
+
+```text
+patient_043_lge_landmarks.json
+patient_043_lge_intensity_bullseye.png
+patient_043_lge_scar_bullseye.png
+```
+
+该命令不会生成 NPZ、CSV、ROI JSON，也不会复制输入 scar mask。
 
 ## Python 调用
 
-三个命令均有对应的 Python API：
+五个命令均有对应的 Python API：
 
 ```python
 from cardiac_bullseye.config import load_config
 from cardiac_bullseye.workflows import (
     generate_bullseye,
+    generate_lge_bullseye,
+    generate_lge_mask_bullseye,
     generate_short_axis,
     run_complete_pipeline,
 )
@@ -160,6 +400,12 @@ bullseye_outputs = generate_bullseye(bullseye_config)
 
 pipeline_config = load_config("case.toml", "pipeline")
 pipeline_outputs = run_complete_pipeline(pipeline_config)
+
+lge_config = load_config("case_lge.toml", "lge-bullseye")
+lge_outputs = generate_lge_bullseye(lge_config)
+
+lge_mask_config = load_config("case_lge_mask.toml", "lge-mask-bullseye")
+lge_mask_outputs = generate_lge_mask_bullseye(lge_mask_config)
 ```
 
 ## 数据约定

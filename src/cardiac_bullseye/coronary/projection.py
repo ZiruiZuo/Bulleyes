@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import json
 from dataclasses import dataclass
 from itertools import combinations
@@ -14,7 +15,9 @@ from scipy import ndimage
 from skimage.morphology import skeletonize
 
 from ..territory.geometry import normalize_six_segment_relative_angles
+from ..territory.mapping import last_retained_slice_index
 from ..territory.models import LandmarkPair, StudyData
+from ..territory.radial import MaskAnchoredRadialFrame
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class CardiacGeometry:
     slice_positions_mm: NDArray[np.float64]
     base_height_mm: float
     short_axis_image_path: Path | None = None
+    short_axis_sampling_affine: NDArray[np.float64] | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -46,6 +50,14 @@ class CardiacGeometry:
         if affine.shape != (4, 4) or not np.isfinite(affine).all():
             raise ValueError("short_axis_affine must be a finite 4x4 matrix")
         object.__setattr__(self, "short_axis_affine", affine)
+        sampling_affine = (
+            affine.copy()
+            if self.short_axis_sampling_affine is None
+            else np.asarray(self.short_axis_sampling_affine, dtype=float)
+        )
+        if sampling_affine.shape != (4, 4) or not np.isfinite(sampling_affine).all():
+            raise ValueError("short_axis_sampling_affine must be a finite 4x4 matrix")
+        object.__setattr__(self, "short_axis_sampling_affine", sampling_affine)
         positions = np.asarray(self.slice_positions_mm, dtype=float)
         if positions.ndim != 1 or positions.size != self.short_axis_shape[2]:
             raise ValueError("slice_positions_mm does not match short_axis_shape")
@@ -111,6 +123,10 @@ def load_cardiac_geometry(path: str | Path) -> CardiacGeometry:
             Path(image_path_value).expanduser().resolve()
             if image_path_value
             else None
+        ),
+        short_axis_sampling_affine=np.asarray(
+            payload.get("short_axis_sampling_affine", payload["short_axis_affine"]),
+            dtype=float,
         ),
     )
 
@@ -216,6 +232,94 @@ def _polyline_length(points: NDArray[np.float64]) -> float:
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
 
+def _voxel_path_length(
+    path: NDArray[np.int32], affine: NDArray[np.float64]
+) -> float:
+    if len(path) < 2:
+        return 0.0
+    step_vectors = np.diff(path.astype(float), axis=0) @ affine[:3, :3].T
+    return float(np.linalg.norm(step_vectors, axis=1).sum())
+
+
+def _acyclic_voxel_graph_paths(
+    skeleton: NDArray[np.bool_], affine: NDArray[np.float64]
+) -> list[NDArray[np.int32]]:
+    """Return a connectivity-preserving, cycle-free set of graph paths."""
+
+    traced = _voxel_graph_paths(skeleton)
+    opened_cycles: list[tuple[int, NDArray[np.int32]]] = []
+    candidates: list[tuple[float, int, NDArray[np.int32]]] = []
+    for index, path in enumerate(traced):
+        if np.array_equal(path[0], path[-1]):
+            if len(path) > 2:
+                opened_cycles.append((index, path[:-1]))
+            continue
+        candidates.append((_voxel_path_length(path, affine), index, path))
+
+    parent: dict[tuple[int, int, int], tuple[int, int, int]] = {}
+
+    def find(node: tuple[int, int, int]) -> tuple[int, int, int]:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left: tuple[int, int, int], right: tuple[int, int, int]) -> bool:
+        left_root, right_root = find(left), find(right)
+        if left_root == right_root:
+            return False
+        parent[right_root] = left_root
+        return True
+
+    retained: list[tuple[int, NDArray[np.int32]]] = list(opened_cycles)
+    # Prefer long anatomical branches and discard short redundant shortcuts
+    # when a cycle offers multiple routes between the same junctions.
+    for _, index, path in sorted(candidates, key=lambda item: (-item[0], item[1])):
+        start = tuple(int(value) for value in path[0])
+        end = tuple(int(value) for value in path[-1])
+        if union(start, end):
+            retained.append((index, path))
+    return [path for _, path in sorted(retained, key=lambda item: item[0])]
+
+
+def _path_endpoint_degrees(
+    paths: list[NDArray[np.int32]],
+) -> dict[tuple[int, int, int], int]:
+    degrees: dict[tuple[int, int, int], int] = {}
+    for path in paths:
+        for point in (path[0], path[-1]):
+            node = tuple(int(value) for value in point)
+            degrees[node] = degrees.get(node, 0) + 1
+    return degrees
+
+
+def _split_world_path_by_label(
+    labels: NDArray[np.int32],
+    path: NDArray[np.int32],
+    world: NDArray[np.float64],
+) -> list[tuple[int, NDArray[np.float64]]]:
+    path_labels = labels[tuple(path.T)]
+    if not np.all(path_labels != 0):
+        raise ValueError("A coronary skeleton path has no source vessel label")
+
+    output: list[tuple[int, NDArray[np.float64]]] = []
+    active_label = int(path_labels[0])
+    active_points = [world[0]]
+    for index in range(1, len(world)):
+        next_label = int(path_labels[index])
+        if next_label == active_label:
+            active_points.append(world[index])
+            continue
+        boundary = 0.5 * (world[index - 1] + world[index])
+        active_points.append(boundary)
+        output.append((active_label, np.asarray(active_points, dtype=float)))
+        active_label = next_label
+        active_points = [boundary, world[index]]
+    output.append((active_label, np.asarray(active_points, dtype=float)))
+    return output
+
+
 def _resample_polyline(
     points: NDArray[np.float64], step_mm: float
 ) -> NDArray[np.float64]:
@@ -257,39 +361,58 @@ def load_coronary_paths_from_nifti(
     binary_input = len(source_labels) == 1
     next_path_label = 1
 
-    for label in source_labels:
-        binary = labels == label
-        if not mask_is_centerline:
-            binary = np.asarray(skeletonize(binary), dtype=bool)
-        else:
-            binary = np.asarray(binary, dtype=bool)
-        if not binary.any():
-            continue
-        components, component_count = ndimage.label(binary, structure=np.ones((3, 3, 3)))
-        for component_index in range(1, component_count + 1):
-            component = components == component_index
-            for voxel_path in _voxel_graph_paths(component):
-                homogeneous = np.column_stack(
-                    [voxel_path.astype(float), np.ones(len(voxel_path))]
+    binary = np.asarray(labels != 0, dtype=bool)
+    if not mask_is_centerline:
+        binary = np.asarray(skeletonize(binary), dtype=bool)
+    if binary.any():
+        affine = np.asarray(image.affine, dtype=float)
+        voxel_paths = _acyclic_voxel_graph_paths(binary, affine)
+        endpoint_degrees = _path_endpoint_degrees(voxel_paths)
+        for voxel_path in voxel_paths:
+            start = tuple(int(value) for value in voxel_path[0])
+            end = tuple(int(value) for value in voxel_path[-1])
+            internal_bridge = (
+                endpoint_degrees.get(start, 0) > 1
+                and endpoint_degrees.get(end, 0) > 1
+            )
+            homogeneous = np.column_stack(
+                [voxel_path.astype(float), np.ones(len(voxel_path))]
+            )
+            world = (affine @ homogeneous.T).T[:, :3]
+            if smoothing_sigma_voxels > 0 and len(world) >= 4:
+                smoothed = ndimage.gaussian_filter1d(
+                    world, sigma=smoothing_sigma_voxels, axis=0, mode="nearest"
                 )
-                world = (np.asarray(image.affine, dtype=float) @ homogeneous.T).T[:, :3]
-                if smoothing_sigma_voxels > 0 and len(world) >= 4:
-                    smoothed = ndimage.gaussian_filter1d(
-                        world, sigma=smoothing_sigma_voxels, axis=0, mode="nearest"
+                smoothed[0], smoothed[-1] = world[0], world[-1]
+                world = smoothed
+            resampled_world = _resample_polyline(world, resample_step_mm)
+            if (
+                not internal_bridge
+                and _polyline_length(resampled_world) < min_path_length_mm
+            ):
+                continue
+            if binary_input:
+                output.append(
+                    CoronaryPath(
+                        label=next_path_label,
+                        world_points=resampled_world,
                     )
-                    smoothed[0], smoothed[-1] = world[0], world[-1]
-                    world = smoothed
-                world = _resample_polyline(world, resample_step_mm)
-                if _polyline_length(world) >= min_path_length_mm:
-                    # A multi-label mask already carries vessel identities. For
-                    # a binary mask, assign a separate display label to each
-                    # extracted branch/path so it can receive its own colour.
-                    display_label = next_path_label if binary_input else label
-                    output.append(
-                        CoronaryPath(label=display_label, world_points=world)
+                )
+                next_path_label += 1
+                continue
+            # Split mixed-label graph paths at the boundary midpoint. Both
+            # coloured subpaths include that point, so no visible gap appears.
+            for display_label, labelled_world in _split_world_path_by_label(
+                labels, voxel_path, world
+            ):
+                output.append(
+                    CoronaryPath(
+                        label=display_label,
+                        world_points=_resample_polyline(
+                            labelled_world, resample_step_mm
+                        ),
                     )
-                    if binary_input:
-                        next_path_label += 1
+                )
     if not output:
         raise ValueError("No usable coronary centreline paths were found")
     return output
@@ -311,7 +434,7 @@ def _landmark_world_point(
     # Internal arrays are (slice, row=voxel axis 0, column=voxel axis 1), so
     # stored annotation (x, y) maps back to NIfTI voxel (y, x, slice).
     voxel = np.asarray([point_xy[1], point_xy[0], float(slice_index), 1.0])
-    return (geometry.short_axis_affine @ voxel)[:3]
+    return (geometry.short_axis_sampling_affine @ voxel)[:3]
 
 
 def _raw_long_axis_angle(
@@ -405,8 +528,20 @@ def project_coronary_paths(
     landmarks: list[LandmarkPair | None],
     *,
     six_segment_warp: bool = True,
+    deleted_slice_indices: Iterable[int] = (),
+    radial_frame: MaskAnchoredRadialFrame | None = None,
 ) -> list[ProjectedCoronaryPath]:
     """Project registered 3-D coronary paths to the current bullseye frame."""
+
+    deleted = tuple(int(index) for index in deleted_slice_indices)
+    retained_basal_index = last_retained_slice_index(study.slice_count, deleted)
+    effective_base_height = (
+        float(geometry.slice_positions_mm[retained_basal_index])
+        if deleted
+        else geometry.base_height_mm
+    )
+    if effective_base_height <= 0.0:
+        raise ValueError("The retained basal slice must lie above the true apex")
 
     frames = _build_angular_frames(geometry, study, landmarks)
     projected: list[ProjectedCoronaryPath] = []
@@ -428,18 +563,28 @@ def project_coronary_paths(
         if six_segment_warp:
             canonical = normalize_six_segment_relative_angles(canonical, separation)
 
-        radius = 4.0 * heights / geometry.base_height_mm
+        if radial_frame is None:
+            radius = 4.0 * heights / effective_base_height
+            valid_height = heights >= 0.0
+        else:
+            radius = radial_frame.map_positions(heights)
+            valid_height = radius >= 1.0
         plot_angles = canonical + np.pi
         xy = np.column_stack(
             [radius * np.cos(plot_angles), radius * np.sin(plot_angles)]
         )
-        # Keep points above the selected basal plane. Their h/H ratio is > 1,
+        # Keep points above the effective basal plane. Their h/H ratio is > 1,
         # hence their bullseye radius naturally extends beyond the outer ring.
         # Points below the true apical plane remain excluded because a negative
         # polar radius would mirror their direction by 180 degrees.
-        valid = np.isfinite(xy).all(axis=1) & (heights >= 0.0)
+        valid = np.isfinite(xy).all(axis=1) & valid_height
         for segment in _split_valid_polyline(xy, valid):
             projected.append(ProjectedCoronaryPath(label=path.label, xy=segment))
     if not projected:
-        raise ValueError("No coronary centreline point lies above the apical plane")
+        boundary = (
+            "the apical myocardium anchor"
+            if radial_frame is not None
+            else "the apical plane"
+        )
+        raise ValueError(f"No coronary centreline point lies above {boundary}")
     return projected

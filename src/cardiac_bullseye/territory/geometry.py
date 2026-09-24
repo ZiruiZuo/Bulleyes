@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import ndimage
@@ -52,6 +54,79 @@ def estimate_lv_center(myocardium_mask: ArrayLike) -> tuple[float, float]:
     except ValueError:
         y, x = ndimage.center_of_mass(myocardium)
         return float(x), float(y)
+
+
+def estimate_lv_centers(
+    myocardium_masks: ArrayLike,
+    *,
+    center_overrides: Iterable[tuple[float, float] | None] | None = None,
+) -> NDArray[np.float64]:
+    """Estimate one LV cavity center per nonempty short-axis slice.
+
+    A slice whose myocardium encloses a cavity uses its own cavity centroid.
+    An open slice copies the center of the nearest closed slice.  Equal-distance
+    ties are resolved toward the larger (more basal) slice index.  Empty slices
+    are returned as ``(nan, nan)`` and do not act as reference slices.
+    """
+
+    masks = np.asarray(myocardium_masks, dtype=bool)
+    if masks.ndim != 3:
+        raise ValueError("myocardium_masks must have shape (slice, height, width)")
+
+    centers = np.full((masks.shape[0], 2), np.nan, dtype=float)
+    nonempty_indices: list[int] = []
+    closed_indices: list[int] = []
+    for slice_index, myocardium in enumerate(masks):
+        if not myocardium.any():
+            continue
+        nonempty_indices.append(slice_index)
+        try:
+            centers[slice_index] = infer_lv_cavity_center(myocardium)
+        except ValueError:
+            continue
+        closed_indices.append(slice_index)
+
+    if nonempty_indices and not closed_indices:
+        raise ValueError(
+            "No myocardial slice contains a closed LV cavity; "
+            "at least one closed LV cavity is required"
+        )
+
+    for slice_index in nonempty_indices:
+        if np.isfinite(centers[slice_index]).all():
+            continue
+        reference_index = min(
+            closed_indices,
+            key=lambda candidate: (abs(candidate - slice_index), -candidate),
+        )
+        centers[slice_index] = centers[reference_index]
+
+    if center_overrides is not None:
+        overrides = list(center_overrides)
+        if len(overrides) != masks.shape[0]:
+            raise ValueError("center_overrides must have one entry per slice")
+        height, width = masks.shape[1:]
+        for slice_index, override in enumerate(overrides):
+            if override is None:
+                continue
+            if not masks[slice_index].any():
+                raise ValueError(
+                    f"Center override on slice {slice_index + 1} requires a "
+                    "nonempty myocardium mask"
+                )
+            value = np.asarray(override, dtype=float)
+            if value.shape != (2,) or not np.isfinite(value).all():
+                raise ValueError(
+                    "Each center override must contain two finite values"
+                )
+            x, y = map(float, value)
+            if not (0.0 <= x < width and 0.0 <= y < height):
+                raise ValueError(
+                    f"Center override on slice {slice_index + 1} is outside "
+                    "the image"
+                )
+            centers[slice_index] = (x, y)
+    return centers
 
 
 def aligned_angles(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
@@ -195,18 +196,68 @@ def load_study_nifti(
 def save_landmarks_json(
     path: str | Path,
     landmarks: list[LandmarkPair | None],
+    *,
+    deleted_slice_indices: Iterable[int] = (),
+    image_shape: tuple[int, ...] | None = None,
+    center_overrides: Iterable[tuple[float, float] | None] | None = None,
 ) -> None:
     """Save landmarks atomically enough for an interactive annotation session."""
+
+    deleted = {int(index) for index in deleted_slice_indices}
+    invalid = sorted(index for index in deleted if index < 0 or index >= len(landmarks))
+    if invalid:
+        raise ValueError(f"Deleted slice indices are out of range: {invalid}")
+    centers = (
+        [None] * len(landmarks)
+        if center_overrides is None
+        else list(center_overrides)
+    )
+    if len(centers) != len(landmarks):
+        raise ValueError("center_overrides must have one entry per slice")
+
+    normalized_centers: list[tuple[float, float] | None] = []
+    for index, center in enumerate(centers):
+        if center is None or index in deleted:
+            normalized_centers.append(None)
+            continue
+        values = np.asarray(center, dtype=float)
+        if values.shape != (2,) or not np.isfinite(values).all():
+            raise ValueError("Each center override must contain two finite values")
+        x, y = map(float, values)
+        if image_shape is not None:
+            height, width = image_shape[1:]
+            if not (0.0 <= x < width and 0.0 <= y < height):
+                raise ValueError(
+                    f"Center override on slice {index + 1} is outside the "
+                    f"current image shape {tuple(image_shape)}"
+                )
+        normalized_centers.append((x, y))
+
+    slices = []
+    for index, pair in enumerate(landmarks):
+        center = normalized_centers[index]
+        if index in deleted:
+            item = {"status": "deleted"}
+        elif pair is None:
+            item = None if center is None else {
+                "status": "skipped",
+                "center": list(center),
+            }
+        else:
+            item = {"aip": list(pair.aip), "iip": list(pair.iip)}
+            if center is not None:
+                item["center"] = list(center)
+        slices.append(item)
 
     payload = {
         "coordinate_convention": "zero-based (x, y) image pixel coordinates",
         "point_order": ["AIP", "IIP"],
-        "slices": [
-            None
-            if pair is None
-            else {"aip": list(pair.aip), "iip": list(pair.iip)}
-            for pair in landmarks
-        ],
+        **(
+            {"image_shape": [int(value) for value in image_shape]}
+            if image_shape is not None
+            else {}
+        ),
+        "slices": slices,
     }
 
     path = Path(path)
@@ -221,6 +272,8 @@ def save_landmarks_json(
 def load_landmarks_json(
     path: str | Path,
     expected_slice_count: int,
+    *,
+    expected_image_shape: tuple[int, ...] | None = None,
 ) -> list[LandmarkPair | None]:
     """Load saved landmarks, or return an empty annotation list."""
 
@@ -229,6 +282,17 @@ def load_landmarks_json(
         return [None] * expected_slice_count
 
     payload = json.loads(path.read_text(encoding="utf-8"))
+    stored_shape = payload.get("image_shape")
+    if (
+        expected_image_shape is not None
+        and stored_shape is not None
+        and tuple(int(value) for value in stored_shape)
+        != tuple(int(value) for value in expected_image_shape)
+    ):
+        raise ValueError(
+            f"Landmark image shape {tuple(stored_shape)} does not match "
+            f"the current image shape {tuple(expected_image_shape)}"
+        )
     slices = payload.get("slices", [])
     if len(slices) != expected_slice_count:
         raise ValueError(
@@ -240,6 +304,8 @@ def load_landmarks_json(
     for item in slices:
         if item is None:
             result.append(None)
+        elif item.get("status") in {"deleted", "skipped"}:
+            result.append(None)
         else:
             result.append(
                 LandmarkPair(
@@ -247,7 +313,102 @@ def load_landmarks_json(
                     iip=tuple(map(float, item["iip"])),
                 )
             )
+    if expected_image_shape is not None:
+        if len(expected_image_shape) != 3:
+            raise ValueError("expected_image_shape must be (slice, height, width)")
+        height, width = expected_image_shape[1:]
+        for index, pair in enumerate(result):
+            if pair is None:
+                continue
+            for name, (x, y) in (("AIP", pair.aip), ("IIP", pair.iip)):
+                if not (0.0 <= x < width and 0.0 <= y < height):
+                    raise ValueError(
+                        f"Saved {name} on slice {index + 1} is outside the "
+                        f"current image shape {tuple(expected_image_shape)}"
+                    )
     return result
+
+
+def load_center_overrides_json(
+    path: str | Path,
+    expected_slice_count: int,
+    *,
+    expected_image_shape: tuple[int, ...] | None = None,
+) -> list[tuple[float, float] | None]:
+    """Load optional per-slice manual LV center overrides."""
+
+    path = Path(path)
+    if not path.exists():
+        return [None] * expected_slice_count
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    stored_shape = payload.get("image_shape")
+    if (
+        expected_image_shape is not None
+        and stored_shape is not None
+        and tuple(int(value) for value in stored_shape)
+        != tuple(int(value) for value in expected_image_shape)
+    ):
+        raise ValueError(
+            f"Landmark image shape {tuple(stored_shape)} does not match "
+            f"the current image shape {tuple(expected_image_shape)}"
+        )
+    slices = payload.get("slices", [])
+    if len(slices) != expected_slice_count:
+        raise ValueError(
+            f"Landmark file contains {len(slices)} slices, but the study has "
+            f"{expected_slice_count}"
+        )
+
+    result: list[tuple[float, float] | None] = []
+    height = width = None
+    if expected_image_shape is not None:
+        if len(expected_image_shape) != 3:
+            raise ValueError("expected_image_shape must be (slice, height, width)")
+        height, width = expected_image_shape[1:]
+    for index, item in enumerate(slices):
+        if not isinstance(item, dict) or item.get("status") == "deleted":
+            result.append(None)
+            continue
+        value = item.get("center")
+        if value is None:
+            result.append(None)
+            continue
+        center = np.asarray(value, dtype=float)
+        if center.shape != (2,) or not np.isfinite(center).all():
+            raise ValueError(
+                f"Saved center on slice {index + 1} must contain two finite values"
+            )
+        x, y = map(float, center)
+        if width is not None and not (0.0 <= x < width and 0.0 <= y < height):
+            raise ValueError(
+                f"Saved center on slice {index + 1} is outside the current "
+                f"image shape {tuple(expected_image_shape)}"
+            )
+        result.append((x, y))
+    return result
+
+
+def load_deleted_slice_indices(
+    path: str | Path,
+    expected_slice_count: int,
+) -> set[int]:
+    """Load slice indices explicitly excluded from radial bullseye mapping."""
+
+    path = Path(path)
+    if not path.exists():
+        return set()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    slices = payload.get("slices", [])
+    if len(slices) != expected_slice_count:
+        raise ValueError(
+            f"Landmark file contains {len(slices)} slices, but the study has "
+            f"{expected_slice_count}"
+        )
+    return {
+        index
+        for index, item in enumerate(slices)
+        if isinstance(item, dict) and item.get("status") == "deleted"
+    }
 
 
 def save_bullseye_npz(path: str | Path, result: BullseyeResult) -> None:

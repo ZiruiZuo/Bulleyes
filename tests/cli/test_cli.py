@@ -1,5 +1,8 @@
 """Tests for the command-line workflow entry points."""
 
+from pathlib import Path
+import tomllib
+
 import pytest
 
 
@@ -9,6 +12,12 @@ import pytest
         ("short_axis_main", "generate_short_axis", "short-axis"),
         ("bullseye_main", "generate_bullseye", "bullseye"),
         ("pipeline_main", "run_complete_pipeline", "pipeline"),
+        ("lge_bullseye_main", "generate_lge_bullseye", "lge-bullseye"),
+        (
+            "lge_mask_bullseye_main",
+            "generate_lge_mask_bullseye",
+            "lge-mask-bullseye",
+        ),
     ],
 )
 def test_command_dispatches_to_its_workflow(
@@ -48,7 +57,38 @@ def test_command_returns_one_and_prints_concise_error(monkeypatch, tmp_path, cap
     assert "bad grid" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("entry_name", ["short_axis_main", "bullseye_main", "pipeline_main"])
+@pytest.mark.parametrize("error", [OSError("output is locked"), PermissionError("denied")])
+def test_run_handles_expected_filesystem_errors_without_a_traceback(
+    monkeypatch, tmp_path, capsys, error
+):
+    """Letting a PNG-write error escape would expose a traceback to CLI users."""
+    from cardiac_bullseye import cli
+
+    config_path = tmp_path / "case.toml"
+    config_path.touch()
+    monkeypatch.setattr(cli, "load_config", lambda *_args: object())
+
+    def failing_runner(_config):
+        raise error
+
+    assert cli._run("bullseye", "cardiac-bullseye", failing_runner, [
+        "--config", str(config_path)
+    ]) == 1
+    stderr = capsys.readouterr().err
+    assert str(error) in stderr
+    assert "Traceback" not in stderr
+
+
+@pytest.mark.parametrize(
+    "entry_name",
+    [
+        "short_axis_main",
+        "bullseye_main",
+        "pipeline_main",
+        "lge_bullseye_main",
+        "lge_mask_bullseye_main",
+    ],
+)
 def test_command_help_exits_successfully(entry_name, capsys):
     """Each command must offer argparse help without requiring a configuration."""
     from cardiac_bullseye import cli
@@ -58,3 +98,31 @@ def test_command_help_exits_successfully(entry_name, capsys):
 
     assert exit_info.value.code == 0
     assert "usage:" in capsys.readouterr().out
+
+
+def test_lge_mask_bullseye_command_returns_one_on_validation_error(
+    monkeypatch, tmp_path, capsys
+):
+    """External-scar validation errors propagate through the public command."""
+    from cardiac_bullseye import cli
+
+    config_path = tmp_path / "case.toml"
+    config_path.touch()
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda *_args: (_ for _ in ()).throw(ValueError("scar outside myocardium")),
+    )
+
+    assert cli.lge_mask_bullseye_main(["--config", str(config_path)]) == 1
+    assert "scar outside myocardium" in capsys.readouterr().err
+
+
+def test_pyproject_registers_external_scar_bullseye_command():
+    """Package metadata must expose the dedicated external-scar command."""
+    pyproject = Path(__file__).parents[2] / "pyproject.toml"
+    scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
+
+    assert scripts["cardiac-lge-mask-bullseye"] == (
+        "cardiac_bullseye.cli:lge_mask_bullseye_main"
+    )

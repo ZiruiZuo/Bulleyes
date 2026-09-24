@@ -44,3 +44,42 @@ def test_geometry_json_records_true_apex_and_slice_heights(tmp_path):
     assert payload["slice_positions_from_true_apex_mm"] == [2.0, 7.0, 12.0, 17.0]
     assert payload["short_axis_shape"] == [8, 9, 4]
     assert default_geometry_path(tmp_path / "short_axis.nii.gz").name == "short_axis_geometry.json"
+
+
+def test_geometry_json_records_orientation_reference_and_inplane_rotation(tmp_path):
+    plan = LongAxisPlan(
+        vla_x_axis=np.array([0.0, 0.0, 1.0]),
+        vla_y_axis=np.array([1.0, 0.0, 0.0]),
+        vla_normal=np.array([0.0, 1.0, 0.0]),
+        hla_x_axis=np.array([0.0, 1.0, 0.0]),
+        hla_y_axis=np.array([0.0, 0.0, 1.0]),
+        hla_normal=np.array([1.0, 0.0, 0.0]),
+        apex=np.zeros(3),
+        valve=np.array([0.0, 0.0, 10.0]),
+        long_axis=np.array([0.0, 0.0, 1.0]),
+    )
+    affine = np.eye(4)
+    affine[:3, 0] = np.array([1.0, 1.0, 0.0]) / np.sqrt(2.0)
+    affine[:3, 1] = np.array([-1.0, 1.0, 0.0]) / np.sqrt(2.0)
+    stack = StackResult(
+        data=np.zeros((4, 4, 2), dtype=np.float32),
+        affine=affine,
+        positions_mm=np.array([0.0, 5.0]),
+    )
+    reference = tmp_path / "lge_sax.nii.gz"
+    output = tmp_path / "geometry.json"
+
+    save_planning_geometry(
+        output,
+        plan=plan,
+        stack=stack,
+        apex_t_mm=0.0,
+        base_t_mm=10.0,
+        source_image_path=tmp_path / "source.nii.gz",
+        short_axis_path=tmp_path / "short_axis.nii.gz",
+        orientation_reference_path=reference,
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["orientation_reference_path"] == str(reference.resolve())
+    assert abs(payload["inplane_rotation_from_unreferenced_deg"] + 45.0) < 1e-6

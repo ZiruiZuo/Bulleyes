@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import ndimage
@@ -7,7 +9,7 @@ from scipy import ndimage
 from .aha17 import aha17_segment_id_map
 from .geometry import (
     aligned_angles,
-    estimate_lv_center,
+    estimate_lv_centers,
     normalize_six_segment_angles,
 )
 from .models import BullseyeResult, LandmarkPair, StudyData
@@ -65,6 +67,7 @@ def compute_slice_territory_probabilities(
     angle_count: int = 360,
     angular_smoothing_sigma_deg: float = 1.5,
     six_segment_warp: bool = True,
+    center_overrides: Iterable[tuple[float, float] | None] | None = None,
 ) -> NDArray[np.float64]:
     """Convert territory masks to per-slice circular probabilities.
 
@@ -82,6 +85,10 @@ def compute_slice_territory_probabilities(
 
     result = np.full((study.slice_count, angle_count, 3), np.nan, dtype=float)
     sigma_bins = angular_smoothing_sigma_deg / 360.0 * angle_count
+    centers = estimate_lv_centers(
+        study.territory_mask > 0,
+        center_overrides=center_overrides,
+    )
 
     for slice_index, pair in enumerate(landmarks):
         if pair is None:
@@ -92,7 +99,7 @@ def compute_slice_territory_probabilities(
         if not myocardium.any():
             continue
 
-        center = estimate_lv_center(myocardium)
+        center = tuple(centers[slice_index])
         y, x = np.nonzero(myocardium)
         labels = labels_2d[y, x].astype(int)
         angles = aligned_angles(x, y, center, pair.aip, pair.iip)
@@ -159,17 +166,80 @@ def _interpolate_slice_probabilities(
     return output
 
 
-def infer_apex_territory(
-    slice_probabilities: ArrayLike,
-) -> int:
-    """Infer segment 17 from the most apical slice with valid probabilities."""
+def remove_deleted_slices_from_radial_axis(
+    values: ArrayLike,
+    source_radii: ArrayLike,
+    deleted_slice_indices: Iterable[int],
+    *,
+    rescale_retained_base: bool = True,
+) -> tuple[NDArray, NDArray[np.float64]]:
+    """Remove deleted slices and optionally map the retained base to radius 4."""
 
-    probabilities = np.asarray(slice_probabilities, dtype=float)
-    for slice_index in range(probabilities.shape[0]):
-        mean_probability = np.nanmean(probabilities[slice_index], axis=0)
-        if np.isfinite(mean_probability).any():
-            return int(np.nanargmax(mean_probability)) + 1
-    return 0
+    data = np.asarray(values)
+    source = np.asarray(source_radii, dtype=float)
+    if data.ndim == 0 or data.shape[0] != source.size:
+        raise ValueError("values and source_radii must have the same slice count")
+    deleted = tuple(int(index) for index in deleted_slice_indices)
+    retained_basal_index = last_retained_slice_index(source.size, deleted)
+    if retained_basal_index == source.size - 1:
+        return data, source
+
+    retained = slice(0, retained_basal_index + 1)
+    retained_source = source[retained].copy()
+    if rescale_retained_base:
+        basal_radius = float(retained_source[-1])
+        if basal_radius > 0.0:
+            retained_source *= 4.0 / basal_radius
+        else:
+            retained_source[-1] = 4.0
+    return data[retained], retained_source
+
+
+def last_retained_slice_index(
+    slice_count: int,
+    deleted_slice_indices: Iterable[int],
+) -> int:
+    """Validate a contiguous basal deletion and return its retained boundary."""
+
+    if slice_count < 1:
+        raise ValueError("slice_count must be positive")
+    deleted = {int(index) for index in deleted_slice_indices}
+    invalid = sorted(index for index in deleted if index < 0 or index >= slice_count)
+    if invalid:
+        raise ValueError(f"Deleted slice indices are out of range: {invalid}")
+    if not deleted:
+        return slice_count - 1
+    first_deleted = min(deleted)
+    if deleted != set(range(first_deleted, slice_count)):
+        raise ValueError("Deleted slices must form one contiguous basal tail")
+    if first_deleted == 0:
+        raise ValueError("At least one slice must remain after deletion")
+    return first_deleted - 1
+
+
+def infer_apex_territory(
+    probabilities: ArrayLike,
+    radial_positions: ArrayLike,
+) -> int:
+    """Infer segment 17 from aggregate probabilities in AHA segments 13-16."""
+
+    values = np.asarray(probabilities, dtype=float)
+    radii = np.asarray(radial_positions, dtype=float)
+    if values.ndim != 3 or values.shape[0] != radii.size or values.shape[2] != 3:
+        raise ValueError(
+            "probabilities and radial_positions have incompatible shapes"
+        )
+    selected = values[(radii >= 1.0) & (radii < 2.0)]
+    finite_counts = np.isfinite(selected).sum(axis=(0, 1))
+    scores = np.divide(
+        np.nansum(selected, axis=(0, 1)),
+        finite_counts,
+        out=np.full(3, np.nan, dtype=float),
+        where=finite_counts > 0,
+    )
+    if not np.isfinite(scores).any():
+        return 0
+    return int(np.nanargmax(scores)) + 1
 
 
 def build_bullseye(
@@ -180,6 +250,8 @@ def build_bullseye(
     radial_count: int = 300,
     radial_smoothing_sigma: float = 1.5,
     apex_territory: int | None = None,
+    deleted_slice_indices: Iterable[int] = (),
+    rescale_deleted_base: bool = True,
 ) -> BullseyeResult:
     """Interpolate slice probabilities into the annular AHA bullseye domain."""
 
@@ -219,8 +291,18 @@ def build_bullseye(
         source_radii_array = 1.0 + 3.0 * normalized_positions
 
     radial_positions = np.linspace(1.0, 4.0, radial_count)
+    radial_probabilities, radial_source_radii = (
+        remove_deleted_slices_from_radial_axis(
+            probabilities,
+            source_radii_array,
+            deleted_slice_indices,
+            rescale_retained_base=rescale_deleted_base,
+        )
+    )
+    if not np.isfinite(radial_probabilities).any():
+        raise ValueError("No valid slice probabilities remain after deletion")
     dense_probabilities = _interpolate_slice_probabilities(
-        probabilities, source_radii_array, radial_positions
+        radial_probabilities, radial_source_radii, radial_positions
     )
     if radial_smoothing_sigma > 0:
         dense_probabilities = ndimage.gaussian_filter1d(
@@ -240,7 +322,9 @@ def build_bullseye(
     segment_ids = aha17_segment_id_map(radial_positions, angles)
 
     if apex_territory is None:
-        apex_territory = infer_apex_territory(probabilities)
+        apex_territory = infer_apex_territory(
+            dense_probabilities, radial_positions
+        )
     if apex_territory not in {0, 1, 2, 3}:
         raise ValueError("apex_territory must be 0, 1, 2, or 3")
 
@@ -265,6 +349,9 @@ def compute_bullseye(
     six_segment_warp: bool = True,
     apex_territory: int | None = None,
     source_radii: ArrayLike | None = None,
+    deleted_slice_indices: Iterable[int] = (),
+    rescale_deleted_base: bool = True,
+    center_overrides: Iterable[tuple[float, float] | None] | None = None,
 ) -> BullseyeResult:
     """Run the complete numerical pipeline without plotting or file output."""
 
@@ -274,6 +361,7 @@ def compute_bullseye(
         angle_count=angle_count,
         angular_smoothing_sigma_deg=angular_smoothing_sigma_deg,
         six_segment_warp=six_segment_warp,
+        center_overrides=center_overrides,
     )
     return build_bullseye(
         slice_probabilities,
@@ -282,6 +370,8 @@ def compute_bullseye(
         radial_count=radial_count,
         radial_smoothing_sigma=radial_smoothing_sigma,
         apex_territory=apex_territory,
+        deleted_slice_indices=deleted_slice_indices,
+        rescale_deleted_base=rescale_deleted_base,
     )
 
 

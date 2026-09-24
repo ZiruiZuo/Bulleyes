@@ -15,6 +15,7 @@ dependencies = [
     "nibabel>=5.2",
     "scikit-image>=0.22",
     "PyQt5>=5.15",
+    "SimpleITK>=2.3",
     "tomli>=2.0; python_version < '3.11'",
 ]
 
@@ -22,6 +23,8 @@ dependencies = [
 cardiac-short-axis = "cardiac_bullseye.cli:short_axis_main"
 cardiac-bullseye = "cardiac_bullseye.cli:bullseye_main"
 cardiac-pipeline = "cardiac_bullseye.cli:pipeline_main"
+cardiac-lge-bullseye = "cardiac_bullseye.cli:lge_bullseye_main"
+cardiac-lge-mask-bullseye = "cardiac_bullseye.cli:lge_mask_bullseye_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

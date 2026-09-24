@@ -12,6 +12,10 @@ output_directory = 'outputs'
 source_mr = 'inputs/patient_043_mr.nii.gz'
 # 原始世界空间供血区 mask；完整流程的必需输入，可选用于只生成短轴。
 source_mask = 'inputs/patient_043_territory.nii.gz'
+# 可选：参考短轴 NIfTI。只继承其层内 x 方向，不改变本病例选择的 LV 长轴。
+orientation_reference = 'inputs/patient_043_lge_sax.nii.gz'
+# false：每次重新规划；true：读取 <case>_short_axis_points.json 并跳过窗口。
+reuse_saved_points = false
 # 短轴层间距（mm）。
 slice_spacing_mm = 8.0
 # 短轴平面内像素间距（mm）；省略时由规划界面决定。
@@ -25,6 +29,8 @@ fov_mm = [192.0, 192.0]
 short_axis_mr = 'outputs/patient_043_short_axis.nii.gz'
 short_axis_mask = 'outputs/patient_043_short_axis_mask.nii.gz'
 geometry_json = 'outputs/patient_043_geometry.json'
+# false：每次重新标 AIP/IIP；true：读取 <case>_landmarks.json 并跳过窗口。
+reuse_saved_points = false
 
 # 冠脉 mask 和原始世界空间心肌 mask 是牛眼图与完整流程的必需输入。
 coronary_mask = 'inputs/patient_043_coronary.nii.gz'
@@ -44,12 +50,13 @@ coronary_min_path_length_mm = 2.0
 coronary_resample_step_mm = 0.75
 coronary_smoothing_sigma_voxels = 0.0
 coronary_default_color = '#d62728'
-coronary_label_colors = { '2' = '#e41a1c', '3' = '#377eb8', '4' = '#4daf4a' }
-coronary_label_names = { '2' = 'Coronary LAD', '3' = 'Coronary LCX', '4' = 'Coronary RCA' }
+# 键必须与原始 coronary_mask 的标签一致；本例使用 1=LAD、2=LCX、3=RCA。
+coronary_label_colors = { '1' = '#d62728', '2' = '#ff7f0e', '3' = '#9467bd' }
+coronary_label_names = { '1' = 'Coronary LAD', '2' = 'Coronary LCX', '3' = 'Coronary RCA' }
 coronary_linewidth = 1.8
 
 # 参与最近冠脉距离计算的冠脉标签、色图和显示范围（mm）。
-distance_vessel_labels = [2, 3, 4]
+distance_vessel_labels = [1, 2, 3]
 distance_colormap = 'turbo'
 distance_value_range_mm = [0.0, 50.0]
 
@@ -57,3 +64,32 @@ distance_value_range_mm = [0.0, 50.0]
 apex_territory = 1
 # 是否在写出 PNG 后显示交互式图窗。
 show_final_figure = true
+
+[lge_bullseye]
+# 已按 Apex → Base 排列的短轴 LGE，以及直接在该网格上标注的心肌 mask。
+lge = 'inputs/patient_043_lge_sax.nii.gz'
+mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
+# true 时读取 <case>_lge_landmarks.json；正常心肌 ROI 仍需重新选择。
+reuse_saved_points = false
+# 以下参数均可省略并使用这里展示的默认值。
+angle_count = 360
+radial_count = 300
+angular_smoothing_sigma_deg = 1.5
+radial_smoothing_sigma = 1.5
+six_segment_warp = true
+# 缺血性心肌梗死 scar 阈值；每个未删除层需手绘正常心肌 ROI。
+scar_sd_multiplier = 5.0
+normal_roi_min_voxels = 20
+
+[lge_mask_bullseye]
+# 已按 Apex → Base 排列的短轴 LGE、心肌 mask 和已有 scar mask。
+lge = 'inputs/patient_043_lge_sax.nii.gz'
+mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
+lge_scar_mask = 'inputs/patient_043_lge_scar_mask.nii.gz'
+# true 时读取 <case>_lge_landmarks.json 并跳过 AIP/IIP 窗口。
+reuse_saved_points = false
+angle_count = 360
+radial_count = 300
+angular_smoothing_sigma_deg = 1.5
+radial_smoothing_sigma = 1.5
+six_segment_warp = true

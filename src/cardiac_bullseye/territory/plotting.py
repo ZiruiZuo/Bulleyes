@@ -14,11 +14,16 @@ from .mapping import TERRITORY_COLORS, TERRITORY_NAMES
 from .models import BullseyeResult
 
 
+CORONARY_DEFAULT_LABEL_COLORS = {
+    1: "#d62728",  # LAD: red
+    2: "#ff7f0e",  # LCX: orange; distinct from blue LCX territory
+    3: "#9467bd",  # RCA: purple
+}
+
 CORONARY_AUTO_COLORS = (
     "#d62728",  # red
-    "#1f77b4",  # blue
-    "#9467bd",  # purple
     "#ff7f0e",  # orange
+    "#9467bd",  # purple
     "#17becf",  # cyan
     "#8c564b",  # brown
     "#e377c2",  # pink
@@ -110,7 +115,10 @@ def plot_territory_bullseye(
             label,
             coronary_default_color
             if coronary_default_color is not None
-            else CORONARY_AUTO_COLORS[index % len(CORONARY_AUTO_COLORS)],
+            else CORONARY_DEFAULT_LABEL_COLORS.get(
+                label,
+                CORONARY_AUTO_COLORS[index % len(CORONARY_AUTO_COLORS)],
+            ),
         )
         for index, label in enumerate(coronary_labels)
     }

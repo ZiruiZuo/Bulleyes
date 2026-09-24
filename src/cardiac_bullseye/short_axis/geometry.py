@@ -28,6 +28,17 @@ def unit(vector: Iterable[float], name: str = "vector") -> np.ndarray:
     return value / length
 
 
+def undirected_axis_angle_deg(
+    first: Iterable[float], second: Iterable[float]
+) -> float:
+    """Return the acute angle between two axes, ignoring normal polarity."""
+
+    first_axis = unit(first, "first axis")
+    second_axis = unit(second, "second axis")
+    cosine = float(np.clip(abs(np.dot(first_axis, second_axis)), 0.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
 @dataclass(frozen=True)
 class PlaneGrid:
     """A regularly sampled 2-D plane embedded in 3-D world space."""
@@ -224,6 +235,7 @@ def generate_short_axis_stack(
     pixel_spacing_mm: float,
     fov_mm: tuple[float, float] | None = None,
     interpolation_order: int = 1,
+    reference_x_axis: Iterable[float] | None = None,
 ) -> StackResult:
     """Resample ``volume`` into an apex-to-base short-axis stack.
 
@@ -236,7 +248,12 @@ def generate_short_axis_stack(
     if pixel_spacing_mm <= 0:
         raise ValueError("pixel spacing must be positive")
     positions = stack_positions(apex_t, base_t, slice_spacing_mm)
-    x_axis = unit(plan.vla_normal, "short-axis x axis")
+    if reference_x_axis is None:
+        x_axis = unit(plan.vla_normal, "short-axis x axis")
+    else:
+        reference = np.asarray(reference_x_axis, dtype=float)
+        projected = reference - np.dot(reference, plan.long_axis) * plan.long_axis
+        x_axis = unit(projected, "reference short-axis x axis")
     y_axis = unit(np.cross(plan.long_axis, x_axis), "short-axis y axis")
     normal = unit(np.cross(x_axis, y_axis), "short-axis normal")
     if np.dot(normal, plan.long_axis) < 0:

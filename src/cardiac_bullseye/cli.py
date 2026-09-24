@@ -6,7 +6,13 @@ from pathlib import Path
 import sys
 
 from .config import AppConfig, ConfigError, WorkflowName, load_config
-from .workflows import generate_bullseye, generate_short_axis, run_complete_pipeline
+from .workflows import (
+    generate_bullseye,
+    generate_lge_bullseye,
+    generate_lge_mask_bullseye,
+    generate_short_axis,
+    run_complete_pipeline,
+)
 
 
 def _run(
@@ -21,7 +27,7 @@ def _run(
     try:
         config = load_config(args.config, workflow_name)
         runner(config)
-    except (ConfigError, FileNotFoundError, ValueError, RuntimeError) as error:
+    except (ConfigError, OSError, ValueError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     return 0
@@ -40,3 +46,25 @@ def bullseye_main(argv: Sequence[str] | None = None) -> int:
 def pipeline_main(argv: Sequence[str] | None = None) -> int:
     """Run the complete pipeline command."""
     return _run("pipeline", "cardiac-pipeline", run_complete_pipeline, argv)
+
+
+def lge_bullseye_main(argv: Sequence[str] | None = None) -> int:
+    """Run the standalone raw-intensity LGE bullseye command."""
+
+    return _run(
+        "lge-bullseye",
+        "cardiac-lge-bullseye",
+        generate_lge_bullseye,
+        argv,
+    )
+
+
+def lge_mask_bullseye_main(argv: Sequence[str] | None = None) -> int:
+    """Render LGE bullseyes from an existing scar mask."""
+
+    return _run(
+        "lge-mask-bullseye",
+        "cardiac-lge-mask-bullseye",
+        generate_lge_mask_bullseye,
+        argv,
+    )

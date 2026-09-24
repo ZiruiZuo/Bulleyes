@@ -2,14 +2,12 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import nibabel as nib
 import numpy as np
 
 from ..config import AppConfig, validate_config
 from ..coronary import (
-    bullseye_slice_radii,
     load_cardiac_geometry,
     load_coronary_paths_from_nifti,
     project_coronary_paths,
@@ -22,10 +20,15 @@ from ..distance import (
     resample_distance_to_short_axis,
     save_distance_nifti,
 )
-from ..territory.io import load_study_nifti
-from ..territory.landmarks import select_landmarks_interactively
+from ..territory.io import (
+    load_center_overrides_json,
+    load_deleted_slice_indices,
+    load_study_nifti,
+)
+from ..territory.landmarks import load_saved_landmarks, select_landmarks_interactively
 from ..territory.mapping import compute_bullseye
 from ..territory.plotting import save_bullseye_figure
+from ..territory.radial import build_mask_anchored_radial_frame
 from .short_axis import ShortAxisOutputs
 
 
@@ -60,13 +63,17 @@ def generate_bullseye(
         if missing:
             raise FileNotFoundError(
                 "Short-axis workflow did not produce all bullseye inputs: "
-                + ", ".join("<missing mask>" if path is None else str(path) for path in missing)
+                + ", ".join(
+                    "<missing mask>" if path is None else str(path) for path in missing
+                )
             )
 
     if mask_path is None:
         raise ValueError("Bullseye generation requires a short-axis territory mask")
     if mr_path is None or geometry_path is None:
-        raise ValueError("Bullseye generation requires short-axis MR and geometry inputs")
+        raise ValueError(
+            "Bullseye generation requires short-axis MR and geometry inputs"
+        )
 
     coronary_mask = config.bullseye.coronary_mask
     world_myocardium_mask = config.bullseye.world_myocardium_mask
@@ -91,18 +98,54 @@ def generate_bullseye(
         territory_label_map=config.bullseye.territory_label_map,
     )
     print(f"    Loaded {study.slice_count} slices with shape {study.mr.shape[1:]}")
-    source_radii = bullseye_slice_radii(cardiac_geometry)
-    if len(source_radii) != study.slice_count:
-        raise ValueError("Geometry JSON and short-axis study have different slice counts")
+    if len(cardiac_geometry.slice_positions_mm) != study.slice_count:
+        raise ValueError(
+            "Geometry JSON and short-axis study have different slice counts"
+        )
 
-    print("3/8 Select AIP followed by IIP on each slice...")
-    with TemporaryDirectory(prefix="bullseye_landmarks_") as temporary_dir:
-        landmark_path = Path(temporary_dir) / "landmarks.json"
-        landmarks = select_landmarks_interactively(study, landmark_path)
+    print("3/8 Load saved AIP/IIP points..." if config.bullseye.reuse_saved_points else "3/8 Select AIP followed by IIP on each slice...")
+    landmark_path = config.case.output_path("landmarks.json")
+    if config.bullseye.reuse_saved_points:
+        landmarks = load_saved_landmarks(study, landmark_path)
+    else:
+        landmarks = select_landmarks_interactively(
+            study,
+            landmark_path,
+            resume_existing=False,
+            transpose_for_display=True,
+        )
+    deleted_slice_indices = load_deleted_slice_indices(
+        landmark_path,
+        study.slice_count,
+    )
+    center_overrides = load_center_overrides_json(
+        landmark_path,
+        study.slice_count,
+        expected_image_shape=study.mr.shape,
+    )
     completed = sum(pair is not None for pair in landmarks)
     print(f"    Valid landmarks: {completed}/{study.slice_count}")
+    if deleted_slice_indices:
+        deleted_numbers = ", ".join(
+            str(index + 1) for index in sorted(deleted_slice_indices)
+        )
+        print(f"    Deleted slices: {deleted_numbers}")
     if completed == 0:
         raise RuntimeError("No slice has a valid AIP/IIP pair")
+
+    radial_frame = build_mask_anchored_radial_frame(
+        study.territory_mask,
+        cardiac_geometry.slice_positions_mm,
+        deleted_slice_indices,
+    )
+    source_radii = radial_frame.source_radii
+    print(
+        "    Radial anchors: "
+        f"slice {radial_frame.apical_index + 1} "
+        f"({radial_frame.apical_position:.2f} mm) -> r=1; "
+        f"slice {radial_frame.basal_index + 1} "
+        f"({radial_frame.basal_position:.2f} mm) -> r=4"
+    )
 
     print("4/8 Extracting and projecting the registered coronary centreline...")
     coronary_paths = load_coronary_paths_from_nifti(
@@ -118,6 +161,8 @@ def generate_bullseye(
         study,
         landmarks,
         six_segment_warp=config.bullseye.six_segment_warp,
+        deleted_slice_indices=deleted_slice_indices,
+        radial_frame=radial_frame,
     )
     print(
         f"    Extracted {len(coronary_paths)} 3-D path(s); "
@@ -135,6 +180,9 @@ def generate_bullseye(
         six_segment_warp=config.bullseye.six_segment_warp,
         apex_territory=config.bullseye.apex_territory,
         source_radii=source_radii,
+        deleted_slice_indices=deleted_slice_indices,
+        rescale_deleted_base=False,
+        center_overrides=center_overrides,
     )
 
     print("6/8 Saving territory bullseye PNG with coronary overlay...")
@@ -172,7 +220,7 @@ def generate_bullseye(
         distance_volume.distance_mm,
         distance_volume.affine,
         tuple(int(value) for value in short_axis_image.shape),
-        np.asarray(short_axis_image.affine, dtype=float),
+        np.asarray(cardiac_geometry.short_axis_sampling_affine, dtype=float),
         target_myocardium=short_axis_myocardium,
     )
     saved_short_axis_distance = save_distance_nifti(
@@ -195,6 +243,9 @@ def generate_bullseye(
         angular_smoothing_sigma_deg=config.bullseye.angular_smoothing_sigma_deg,
         radial_smoothing_sigma=config.bullseye.radial_smoothing_sigma,
         six_segment_warp=config.bullseye.six_segment_warp,
+        deleted_slice_indices=deleted_slice_indices,
+        rescale_deleted_base=False,
+        center_overrides=center_overrides,
     )
     plot_distance_bullseye(
         distance_bullseye,

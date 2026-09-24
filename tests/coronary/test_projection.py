@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import matplotlib
 import nibabel as nib
 import numpy as np
+import pytest
 
 matplotlib.use("Agg")
 
@@ -18,10 +20,8 @@ from cardiac_bullseye.coronary.projection import (
 )
 from cardiac_bullseye.territory.mapping import build_bullseye
 from cardiac_bullseye.territory.models import BullseyeResult, LandmarkPair, StudyData
-from cardiac_bullseye.territory.plotting import (
-    CORONARY_AUTO_COLORS,
-    plot_territory_bullseye,
-)
+from cardiac_bullseye.territory.radial import build_mask_anchored_radial_frame
+from cardiac_bullseye.territory.plotting import plot_territory_bullseye
 
 
 def _geometry() -> CardiacGeometry:
@@ -66,6 +66,103 @@ def test_true_height_controls_background_and_coronary_radius():
     assert np.all(projected[0].xy[:, 0] < 0)
 
 
+def test_basal_delete_rescales_coronary_to_same_effective_base():
+    geometry = _geometry()
+    study, landmarks = _study_and_landmarks()
+    landmarks[-1] = None
+    path = CoronaryPath(
+        label=1,
+        world_points=np.asarray(
+            [[0.0, 2.0, 3.75], [0.0, 2.0, 7.5], [0.0, 2.0, 9.0]]
+        ),
+    )
+
+    projected = project_coronary_paths(
+        [path],
+        geometry,
+        study,
+        landmarks,
+        deleted_slice_indices={4},
+    )
+
+    radii = np.linalg.norm(projected[0].xy, axis=1)
+    np.testing.assert_allclose(radii, [2.0, 4.0, 4.8], atol=1.0e-7)
+
+
+def test_coronary_projection_uses_mask_anchors_and_omits_radius_below_one():
+    geometry = _geometry()
+    study, landmarks = _study_and_landmarks()
+    study.territory_mask[0] = 0
+    frame = build_mask_anchored_radial_frame(
+        study.territory_mask,
+        geometry.slice_positions_mm,
+    )
+    path = CoronaryPath(
+        label=1,
+        world_points=np.asarray(
+            [
+                [0.0, 2.0, 1.0],
+                [0.0, 2.0, 2.5],
+                [0.0, 2.0, 5.0],
+                [0.0, 2.0, 10.0],
+                [0.0, 2.0, 12.5],
+            ]
+        ),
+    )
+
+    projected = project_coronary_paths(
+        [path], geometry, study, landmarks, radial_frame=frame
+    )
+
+    assert len(projected) == 1
+    radii = np.linalg.norm(projected[0].xy, axis=1)
+    np.testing.assert_allclose(radii, [1.0, 2.0, 4.0, 5.0])
+
+
+def test_delete_rejects_non_basal_slice():
+    geometry = _geometry()
+    study, landmarks = _study_and_landmarks()
+    path = CoronaryPath(
+        label=1,
+        world_points=np.asarray([[0.0, 2.0, 2.0], [0.0, 2.0, 8.0]]),
+    )
+
+    with pytest.raises(ValueError, match="contiguous basal tail"):
+        project_coronary_paths(
+            [path],
+            geometry,
+            study,
+            landmarks,
+            deleted_slice_indices={2},
+        )
+
+
+def test_display_recentering_does_not_change_coronary_projection():
+    """Display-only LGE centering must not corrupt original-world mapping."""
+
+    geometry = _geometry()
+    display_affine = geometry.short_axis_affine.copy()
+    display_affine[:3, 3] = [-300.0, 120.0, 80.0]
+    recentered_geometry = replace(
+        geometry,
+        short_axis_affine=display_affine,
+        short_axis_sampling_affine=geometry.short_axis_affine,
+    )
+    study, landmarks = _study_and_landmarks()
+    path = CoronaryPath(
+        label=1,
+        world_points=np.asarray([[0.0, 2.0, 2.0], [0.0, 2.0, 8.0]]),
+    )
+
+    baseline = project_coronary_paths([path], geometry, study, landmarks)
+    recentered = project_coronary_paths(
+        [path], recentered_geometry, study, landmarks
+    )
+
+    assert len(recentered) == len(baseline)
+    np.testing.assert_allclose(recentered[0].xy, baseline[0].xy, atol=1e-9)
+
+
 def test_extract_ordered_centerline_from_nifti(tmp_path):
     data = np.zeros((9, 9, 11), dtype=np.uint8)
     data[4, 6, 1:10] = 1
@@ -90,6 +187,114 @@ def test_binary_branches_receive_different_display_labels(tmp_path):
     )
     assert len(paths) >= 2
     assert len({item.label for item in paths}) == len(paths)
+
+
+def test_multilabel_centerlines_share_the_bifurcation_node(tmp_path):
+    data = np.zeros((9, 9, 9), dtype=np.uint8)
+    data[4, 4, 1:8] = 1
+    data[4, 5:8, 4] = 2
+    path = tmp_path / "labelled_bifurcation.nii.gz"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), path)
+
+    paths = load_coronary_paths_from_nifti(
+        path,
+        mask_is_centerline=True,
+        min_path_length_mm=0.1,
+        resample_step_mm=0.0,
+    )
+
+    endpoints_by_label = {
+        label: {
+            tuple(point)
+            for item in paths
+            if item.label == label
+            for point in (item.world_points[0], item.world_points[-1])
+        }
+        for label in (1, 2)
+    }
+    assert endpoints_by_label[1] & endpoints_by_label[2] == {(4.0, 4.5, 4.0)}
+
+
+def test_label_transition_inside_a_path_keeps_both_vessel_labels(tmp_path):
+    data = np.zeros((9, 9, 9), dtype=np.uint8)
+    data[4, 4, 1:4] = 1
+    data[4, 4, 4:8] = 2
+    path = tmp_path / "label_transition.nii.gz"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), path)
+
+    paths = load_coronary_paths_from_nifti(
+        path,
+        mask_is_centerline=True,
+        min_path_length_mm=0.1,
+        resample_step_mm=0.0,
+    )
+
+    assert {item.label for item in paths} == {1, 2}
+    endpoints_by_label = {
+        label: {
+            tuple(point)
+            for item in paths
+            if item.label == label
+            for point in (item.world_points[0], item.world_points[-1])
+        }
+        for label in (1, 2)
+    }
+    assert endpoints_by_label[1] & endpoints_by_label[2] == {(4.0, 4.0, 3.5)}
+
+
+def test_short_internal_bridge_is_not_removed_by_length_filter(tmp_path):
+    data = np.zeros((9, 9, 9), dtype=np.uint8)
+    data[4, 0:5, 4] = 1
+    data[1:5, 3, 4] = 1
+    data[4, 4:9, 4] = 1
+    data[4:8, 4, 4] = 1
+    path = tmp_path / "short_internal_bridge.nii.gz"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), path)
+
+    paths = load_coronary_paths_from_nifti(
+        path,
+        mask_is_centerline=True,
+        min_path_length_mm=2.0,
+        resample_step_mm=0.0,
+    )
+
+    bridge_endpoints = {(4.0, 3.0, 4.0), (4.0, 4.0, 4.0)}
+    assert any(
+        {tuple(item.world_points[0]), tuple(item.world_points[-1])}
+        == bridge_endpoints
+        for item in paths
+    )
+
+
+def test_extracted_coronary_graph_has_no_closed_cycles(tmp_path):
+    data = np.zeros((9, 9, 7), dtype=np.uint8)
+    data[3, 0:9, 3] = 1
+    data[3:6, 2, 3] = 1
+    data[3:6, 6, 3] = 1
+    data[5, 2:7, 3] = 1
+    path = tmp_path / "cycle_with_two_tails.nii.gz"
+    nib.save(nib.Nifti1Image(data, np.eye(4)), path)
+
+    paths = load_coronary_paths_from_nifti(
+        path,
+        mask_is_centerline=True,
+        min_path_length_mm=0.1,
+        resample_step_mm=0.0,
+    )
+
+    nodes = {
+        tuple(point)
+        for item in paths
+        for point in item.world_points
+    }
+    edges = {
+        frozenset((tuple(start), tuple(end)))
+        for item in paths
+        for start, end in zip(item.world_points[:-1], item.world_points[1:])
+    }
+    assert len(edges) == len(nodes) - 1
+    assert (5.0, 4.0, 3.0) in nodes
+    assert (3.0, 4.0, 3.0) not in nodes
 
 
 def test_corner_does_not_become_a_spurious_closed_cycle():
@@ -166,8 +371,37 @@ def test_coronary_above_base_is_drawn_outside_bullseye(tmp_path):
     )
     assert axis.get_xlim()[1] > 4.8
     coronary_lines = [line for line in axis.lines if line.get_zorder() == 20]
-    assert {line.get_color() for line in coronary_lines} == set(
-        CORONARY_AUTO_COLORS[:2]
-    )
+    assert coronary_lines[0].get_color() == "#d62728"
+    assert coronary_lines[1].get_color() == "#ff7f0e"
     legend_names = {text.get_text() for text in axis.get_legend().get_texts()}
     assert {"Coronary LAD", "Coronary LCX"}.issubset(legend_names)
+
+
+def test_lcx_default_projection_color_is_orange_when_lad_is_absent(tmp_path):
+    probabilities = np.zeros((2, 24, 3), dtype=float)
+    probabilities[:, :, 0] = 1.0
+    result = build_bullseye(
+        probabilities,
+        [0.0, 1.0],
+        source_radii=[0.0, 4.0],
+        radial_count=7,
+        radial_smoothing_sigma=0.0,
+    )
+    geometry = _geometry()
+    study, landmarks = _study_and_landmarks()
+    path = CoronaryPath(
+        label=2,
+        world_points=np.array([[2.0, 0.0, 4.0], [2.0, 0.0, 8.0]]),
+    )
+    projected = project_coronary_paths([path], geometry, study, landmarks)
+
+    _, axis = plot_territory_bullseye(
+        result,
+        tmp_path / "lcx_only.png",
+        coronary_paths=projected,
+        show=False,
+    )
+
+    coronary_lines = [line for line in axis.lines if line.get_zorder() == 20]
+    assert len(coronary_lines) == 1
+    assert coronary_lines[0].get_color() == "#ff7f0e"

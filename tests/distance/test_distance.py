@@ -13,8 +13,18 @@ from cardiac_bullseye.distance import (
     resample_distance_to_short_axis,
     save_distance_nifti,
 )
+from cardiac_bullseye.distance.mapping import _mean_apical_segment_distances
 from cardiac_bullseye.territory.mapping import build_bullseye
 from cardiac_bullseye.territory.models import LandmarkPair, StudyData
+
+
+def test_apex_distance_is_equal_mean_of_segments_13_to_16():
+    segment_ids = np.asarray([[13, 13, 14, 15, 16, 16]])
+    distance = np.asarray([[1.0, 3.0, 10.0, 20.0, 30.0, 50.0]])
+
+    result = _mean_apical_segment_distances(distance, segment_ids)
+
+    assert result == 18.0
 
 
 def test_world_distance_is_minimum_of_three_projected_vessels(tmp_path):
@@ -117,3 +127,53 @@ def test_distance_bullseye_uses_exact_reference_grid(tmp_path):
     output = tmp_path / "distance.png"
     plot_distance_bullseye(distance_result, output, show=False)
     assert output.is_file() and output.stat().st_size > 1000
+
+    deleted_reference = build_bullseye(
+        probabilities,
+        np.arange(slices),
+        source_radii=np.linspace(0.0, 4.0, slices),
+        radial_count=31,
+        radial_smoothing_sigma=0.0,
+        deleted_slice_indices={3},
+    )
+    slice_distances = np.arange(1.0, slices + 1.0)[:, None, None]
+    varying_sax_distance = np.where(mask > 0, slice_distances, np.nan)
+    deleted_distance = compute_distance_bullseye(
+        study,
+        varying_sax_distance,
+        landmarks,
+        deleted_reference,
+        np.linspace(0.0, 4.0, slices),
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        deleted_slice_indices={3},
+    )
+    assert np.isfinite(deleted_distance.distance_mm).all()
+    radius_two = np.flatnonzero(
+        np.isclose(deleted_distance.radial_positions, 2.0)
+    )[0]
+    np.testing.assert_allclose(deleted_distance.distance_mm[radius_two], 2.0)
+    np.testing.assert_allclose(deleted_distance.distance_mm[-1], 3.0)
+
+    anchored_radii = np.asarray([1.0, 2.0, 4.0, 5.0])
+    anchored_reference = build_bullseye(
+        probabilities,
+        np.arange(slices),
+        source_radii=anchored_radii,
+        radial_count=31,
+        radial_smoothing_sigma=0.0,
+        deleted_slice_indices={3},
+        rescale_deleted_base=False,
+    )
+    anchored_distance = compute_distance_bullseye(
+        study,
+        varying_sax_distance,
+        landmarks,
+        anchored_reference,
+        anchored_radii,
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        deleted_slice_indices={3},
+        rescale_deleted_base=False,
+    )
+    np.testing.assert_allclose(anchored_distance.distance_mm[-1], 3.0)
