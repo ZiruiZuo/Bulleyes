@@ -117,6 +117,9 @@ and enabled flips. For example:
 Step 1/3 — View 2 — Slice 38 — Rotate 90° — Flip H
 ```
 
+The displayed slice number is one-based for users. In saved audit metadata,
+`slice_index` remains the zero-based NIfTI array index.
+
 Changing the active view or slice clears unconfirmed landmark points and
 shows a status message explaining why. Rotating, flipping, or resetting the
 display preserves selected points and redraws them at their transformed
