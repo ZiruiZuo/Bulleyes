@@ -88,8 +88,8 @@ cardiac-short-axis --config .\case_short_axis.toml
 需要的数据：
 
 - `source_mr`：需要重格式化的原始 MR，必需。
-- `source_mask`：供血区或其他标签 mask，可选；要求与原始 MR 同网格。
-- `orientation_reference`：参考 LGE 短轴，可选；仅用于确定层内旋转方向。
+- `source_mask`：与原始 MR 同网格的供血区或其他标签 mask，可选；填写后才会同步生成短轴 mask。
+- `orientation_reference`：参考 LGE 短轴，可选；用于确定层内旋转方向和参考长轴方向。
 
 `case_short_axis.toml`：
 
@@ -126,7 +126,7 @@ patient_043_short_axis_points.json
 跳过 Apex/二尖瓣中心和 Apex–Base 范围选择，并用相同短轴几何重采样新的 label mask。
 源 MR 的 shape 和 affine 必须与保存关键点时一致，否则程序会拒绝复用。
 
-## 用法二：使用已有短轴数据生成牛眼图
+## 用法二：使用已有短轴数据生成血管灌注区域牛眼图和距离图
 
 命令：
 
@@ -174,16 +174,19 @@ world_myocardium_mask = 'inputs/patient_043_myocardium.nii.gz'
 reuse_saved_points = false
 
 # 下面是常用可选参数；省略时使用程序默认值。
+# 输入Territory mask 原始值（可改） = 程序内部的标准标签
 territory_label_map = { 2 = 1, 3 = 2, 4 = 3 }
 coronary_mask_is_centerline = false
+
+# 从 coronary_mask 中提取标签值为 2、3、4 （可改）的血管，计算每个心肌体素到这些冠脉的最短三维距离。
 distance_vessel_labels = [2, 3, 4]
 show_final_figure = true
 ```
 
 程序逐层重新选择 AIP 和 IIP。滚轮缩放，中键拖动平移，`Fit` 恢复视野；
-`Accept` 接受本层，`Redo` 重选，`Skip` 跳过本层，`Delete` 仅用于从基底端连续
-移除截面。默认每次运行都会忽略旧 landmark 并覆盖同名结果；设置
-`reuse_saved_points = true` 后会保留 Skip/Delete 状态并完全跳过标注窗口。
+`Accept` 接受本层，`Redo` 重选，`Skip` 跳过本层，其层会由相邻有关键点标注的层插值。
+`Delete` 仅用于从基底端连续移除截面（用于手动对齐LGE）。
+设置`reuse_saved_points = true` 后会保留 Skip/Delete 状态并完全跳过标注窗口。
 保存文件的层数、图像尺寸和点坐标必须与当前短轴图兼容。
 
 在 `single-reference` 模式中，窗口默认打开中间的有效心肌层。使用 `Previous`
@@ -220,13 +223,12 @@ show_final_figure = true
 两种模式下 Territory、距离图和冠脉叠加始终共用同一套径向坐标。
 
 如果要与未配准的 LGE scar 牛眼图比较，必须人工保证两套短轴图的第一张有 mask
-层以及最后一个未 `Delete` 基底层分别对应。这是标准化 AHA 坐标对应，不是体素级
-配准。
+层以及最后一个未 `Delete` 基底层分别对应。这是标准化 AHA 坐标对应，不是体素级配准。
 
 输出：
 
 ```text
-patient_043_landmarks.json
+patient_043_landmarks.json #手动选择的关键点，方便下次直接复用
 patient_043_bullseye.png
 patient_043_distance_bullseye.png
 patient_043_distance_world.nii.gz
