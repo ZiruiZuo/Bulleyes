@@ -8,6 +8,7 @@ import sys
 from .config import AppConfig, ConfigError, WorkflowName, load_config
 from .workflows import (
     generate_bullseye,
+    generate_intensity_bullseye,
     generate_lge_bullseye,
     generate_lge_mask_bullseye,
     generate_short_axis,
@@ -40,7 +41,90 @@ def short_axis_main(argv: Sequence[str] | None = None) -> int:
 
 def bullseye_main(argv: Sequence[str] | None = None) -> int:
     """Run the bullseye workflow command."""
-    return _run("bullseye", "cardiac-bullseye", generate_bullseye, argv)
+
+    parser = argparse.ArgumentParser(prog="cardiac-bullseye")
+    parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument(
+        "--mode",
+        choices=("per-slice", "single-reference"),
+        default=None,
+        help=(
+            "AIP/IIP annotation mode: select every slice or propagate one "
+            "reference slice (default: per-slice)"
+        ),
+    )
+    parser.add_argument(
+        "--projection",
+        choices=("1-4", "0-4"),
+        default=None,
+        help=(
+            "Radial projection: first myocardial mask slice at radius 1 "
+            "or radius 0 (default: 1-4)"
+        ),
+    )
+    args = parser.parse_args(argv)
+    try:
+        config = load_config(args.config, "bullseye")
+        if args.mode is None and args.projection is None:
+            generate_bullseye(config)
+        elif args.mode is None:
+            generate_bullseye(config, projection=args.projection)
+        elif args.projection is None:
+            generate_bullseye(config, landmark_mode=args.mode)
+        else:
+            generate_bullseye(
+                config,
+                landmark_mode=args.mode,
+                projection=args.projection,
+            )
+    except (ConfigError, OSError, ValueError, RuntimeError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def intensity_bullseye_main(argv: Sequence[str] | None = None) -> int:
+    """Run the continuous image-intensity bullseye command."""
+
+    parser = argparse.ArgumentParser(prog="cardiac-intensity-bullseye")
+    parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument(
+        "--mode",
+        choices=("per-slice", "single-reference"),
+        default=None,
+        help=(
+            "AIP/IIP annotation mode: select every slice or propagate one "
+            "reference slice (default: per-slice)"
+        ),
+    )
+    parser.add_argument(
+        "--projection",
+        choices=("1-4", "0-4"),
+        default=None,
+        help=(
+            "Radial projection: first myocardial mask slice at radius 1 "
+            "or radius 0 (default: 1-4)"
+        ),
+    )
+    args = parser.parse_args(argv)
+    try:
+        config = load_config(args.config, "intensity-bullseye")
+        if args.mode is None and args.projection is None:
+            generate_intensity_bullseye(config)
+        elif args.mode is None:
+            generate_intensity_bullseye(config, projection=args.projection)
+        elif args.projection is None:
+            generate_intensity_bullseye(config, landmark_mode=args.mode)
+        else:
+            generate_intensity_bullseye(
+                config,
+                landmark_mode=args.mode,
+                projection=args.projection,
+            )
+    except (ConfigError, OSError, ValueError, RuntimeError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def pipeline_main(argv: Sequence[str] | None = None) -> int:

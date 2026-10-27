@@ -2,10 +2,10 @@
 
 将心脏 MR 转换为短轴堆栈，并生成患者特异性的 AHA-17 供血区牛眼图、冠脉投影和冠脉距离牛眼图。
 
-项目提供五个独立工作流/命令：只生成短轴、使用已有短轴数据生成牛眼图、一次完成“原始
-MR → 短轴 → 牛眼图”、完整 LGE 强度与 scar 牛眼图，以及使用已有 scar mask 的外部 scar
-牛眼图。后两种 LGE 模式分别对应 `cardiac-lge-bullseye` 和
-`cardiac-lge-mask-bullseye`。
+项目提供六个独立工作流/命令：只生成短轴、使用已有短轴数据生成供血区牛眼图、生成
+连续强度牛眼图、一次完成“原始 MR → 短轴 → 牛眼图”、完整 LGE 强度与 scar 牛眼图，
+以及使用已有 scar mask 的外部 scar 牛眼图。后两种 LGE 模式分别对应
+`cardiac-lge-bullseye` 和 `cardiac-lge-mask-bullseye`。
 
 ## 目录结构
 
@@ -16,6 +16,7 @@ Bulleyes/
 │   ├── territory/        # 供血区处理和 AHA-17 映射
 │   ├── coronary/         # 冠脉中心线提取与投影
 │   ├── distance/         # 冠脉距离体积和距离牛眼图
+│   ├── intensity/        # 任意短轴图像的连续强度牛眼图
 │   └── workflows/        # 独立流程及完整流程
 ├── tests/                # 自动化测试
 ├── config.example.toml   # 完整配置示例
@@ -40,11 +41,12 @@ Set-Location E:\ZZR\Code\Tools\Bulleyes
 python -m pip install -e .
 ```
 
-安装后会提供五个命令：
+安装后会提供六个命令：
 
 ```text
 cardiac-short-axis   只生成短轴
 cardiac-bullseye     只生成牛眼图
+cardiac-intensity-bullseye 由短轴 image 和心肌 mask 生成连续强度牛眼图
 cardiac-pipeline     运行完整流程
 cardiac-lge-bullseye 由短轴 LGE 和同网格心肌 mask 生成强度与 scar 牛眼图
 cardiac-lge-mask-bullseye --config <file> 由已有 scar mask 生成 LGE 牛眼图
@@ -55,6 +57,7 @@ cardiac-lge-mask-bullseye --config <file> 由已有 scar mask 生成 LGE 牛眼�
 ```powershell
 cardiac-short-axis --help
 cardiac-bullseye --help
+cardiac-intensity-bullseye --help
 cardiac-pipeline --help
 cardiac-lge-bullseye --help
 cardiac-lge-mask-bullseye --help
@@ -63,7 +66,7 @@ cardiac-lge-mask-bullseye --help
 ## 配置文件通用规则
 
 建议每条命令使用一份独立的 TOML 配置文件。配置文件只需要包含当前命令用到的
-section，不需要把五种流程的配置全部写在同一个文件里。
+section，不需要把六种流程的配置全部写在同一个文件里。
 
 - 每份配置都必须有 `[case]`；`case.id` 是输出文件名前缀。
 - `case.output_directory` 是结果保存目录，不存在时会自动创建。
@@ -85,7 +88,7 @@ cardiac-short-axis --config .\case_short_axis.toml
 需要的数据：
 
 - `source_mr`：需要重格式化的原始 MR，必需。
-- `source_mask`：与原始 MR 同网格的供血区或其他标签 mask，可选；填写后才会同步生成短轴 mask。
+- `source_mask`：供血区或其他标签 mask，可选；要求与原始 MR 同网格。
 - `orientation_reference`：参考 LGE 短轴，可选；仅用于确定层内旋转方向。
 
 `case_short_axis.toml`：
@@ -128,8 +131,21 @@ patient_043_short_axis_points.json
 命令：
 
 ```powershell
-cardiac-bullseye --config .\case_bullseye.toml
+cardiac-bullseye --config .\case_bullseye.toml --mode per-slice
 ```
+
+`--mode` 控制 AIP/IIP 标注方式：
+
+```powershell
+# 现有方式：在每个保留层分别选择 AIP/IIP，并保持原有 r=1–4 投影。
+cardiac-bullseye --config .\case_bullseye.toml --mode per-slice --projection 1-4
+
+# 单参考层方式，并把真实心尖范围纳入 r=0–4。
+cardiac-bullseye --config .\case_bullseye.toml --mode single-reference --projection 0-4
+```
+
+省略 `--mode` 时默认使用 `per-slice`，因此原有命令和脚本保持兼容。
+省略 `--projection` 时默认使用 `1-4`。
 
 需要的数据：
 
@@ -170,6 +186,14 @@ show_final_figure = true
 `reuse_saved_points = true` 后会保留 Skip/Delete 状态并完全跳过标注窗口。
 保存文件的层数、图像尺寸和点坐标必须与当前短轴图兼容。
 
+在 `single-reference` 模式中，窗口默认打开中间的有效心肌层。使用 `Previous`
+和 `Next` 浏览层面，在最清晰的一层选择 AIP、IIP，然后点击
+`Accept Reference`。程序不会把同一绝对像素坐标复制到所有层，而是保存参考层
+中“质心到 AIP/IIP”的两个方向，并围绕每层自己的质心生成角度参考点。这样每层
+仍使用自己的供血区和距离数据，同时 Territory、距离图和冠脉投影使用一致的角度
+标准。`Delete`/`Restore` 可在接受参考层前排除或恢复层面。生成的 landmark JSON
+会记录 `annotation_mode`、零基参考层索引和便于查看的一基参考层编号。
+
 每层首先按自动规则显示绿色 `+` 质心。若位置不合适，可用鼠标左键直接拖动
 绿色 `+` 修正；在其他位置左键单击仍用于依次选择 AIP、IIP。手动质心作为覆盖值
 写入 landmark JSON。即使随后点击 `Skip`，该层的手动质心仍会保留；`Redo` 会
@@ -183,10 +207,17 @@ show_final_figure = true
 非空心肌层都没有闭合心腔，程序会在标注/计算前报错。该中心同时用于界面中的
 绿色十字、角度映射和后续牛眼图计算。
 
-程序把第一张含有心肌供血区 mask 的层映射到牛眼图 `r=1`，把最后一个未
-`Delete` 的基底层映射到 `r=4`，并在两者之间分为三个等长的 AHA 环。
-Territory、距离图和冠脉叠加共用这套绘图半径；冠脉中映射到 `r<1` 的点不显示。
-第17节段的供血区由13–16节段的平均概率决定，距离值取13–16四个节段均值。
+`--projection` 控制心肌 mask 沿长轴映射到牛眼图的范围：
+
+- `1-4`：兼容原有行为。第一张含心肌 mask 的层映射到 `r=1`，最后一个未
+  `Delete` 的基底层映射到 `r=4`。中心是推断值：第17节段供血区由13–16节段
+  的平均概率决定，距离值取13–16四个节段均值；冠脉中落在 `r<1` 的点不显示。
+- `0-4`：第一张含心肌 mask 的层映射到 `r=0`，基底层仍映射到 `r=4`。
+  Territory 与距离图在 `r<1` 显示真实层间插值结果，不再用统一圆形覆盖；第17
+  节段归属由整个 `r<1` 区域的平均概率多数决定。该模式忽略配置中的固定
+  `apex_territory`。冠脉使用相同的 `0–4` 坐标并保留所有 `r>=0` 的投影点。
+
+两种模式下 Territory、距离图和冠脉叠加始终共用同一套径向坐标。
 
 如果要与未配准的 LGE scar 牛眼图比较，必须人工保证两套短轴图的第一张有 mask
 层以及最后一个未 `Delete` 基底层分别对应。这是标准化 AHA 坐标对应，不是体素级
@@ -202,7 +233,99 @@ patient_043_distance_world.nii.gz
 patient_043_distance_short_axis.nii.gz
 ```
 
-## 用法三：从原始 MR 一次完成短轴和牛眼图
+## 用法三：由短轴图像生成连续强度牛眼图
+
+该命令与 `cardiac-bullseye` 使用相同的短轴视图、AIP/IIP 标注界面和
+`<case>_landmarks.json`。默认不读取供血区标签、冠脉或 `geometry.json`；也可以通过
+TOML 开关把注册后的冠脉投影到强度牛眼图。它在每层、每个角度扇区内计算
+`short_axis_mask > 0` 区域的原始 image 平均值，然后插值为连续牛眼图。
+
+命令：
+
+```powershell
+# 每个保留层分别标注 AIP/IIP，保持原有 r=1–4 投影。
+cardiac-intensity-bullseye --config .\case_intensity.toml --mode per-slice --projection 1-4
+
+# 只选一个参考层，并将最靠心尖有效层映射到 r=0。
+cardiac-intensity-bullseye --config .\case_intensity.toml --mode single-reference --projection 0-4
+```
+
+最小配置 `case_intensity.toml`：
+
+```toml
+[case]
+id = 'patient_043'
+output_directory = 'outputs/patient_043_intensity'
+
+[bullseye]
+short_axis_mr = 'outputs/patient_043_short_axis/patient_043_short_axis.nii.gz'
+short_axis_mask = 'outputs/patient_043_short_axis/patient_043_short_axis_mask.nii.gz'
+
+# false：每次重新标注并覆盖共享 landmark；true：优先读取共享 landmark。
+reuse_saved_points = false
+
+# 以下参数可省略。
+angle_count = 360
+radial_count = 300
+angular_smoothing_sigma_deg = 1.5
+radial_smoothing_sigma = 1.5
+show_final_figure = true
+```
+
+可选冠脉叠加配置：
+
+```toml
+[bullseye]
+# 上面的 short_axis_mr、short_axis_mask 等配置保持不变。
+intensity_coronary_overlay = true
+geometry_json = 'outputs/patient_043_short_axis/patient_043_geometry.json'
+coronary_mask = 'inputs/patient_043_coronary.nii.gz'
+
+# 以下冠脉提取和显示参数与 cardiac-bullseye 共用，均可省略。
+coronary_mask_is_centerline = false
+coronary_min_path_length_mm = 2.0
+coronary_resample_step_mm = 0.75
+coronary_smoothing_sigma_voxels = 0.0
+coronary_label_colors = { 1 = '#d62728', 2 = '#ff7f0e', 3 = '#9467bd' }
+coronary_label_names = { 1 = 'Coronary LAD', 2 = 'Coronary LCX', 3 = 'Coronary RCA' }
+coronary_linewidth = 1.8
+```
+
+开启后，`geometry_json` 必须与 `short_axis_mr` 的 shape 和 affine 完全匹配，
+`coronary_mask` 必须处于该 geometry 所描述的世界坐标系。该功能不需要
+`world_myocardium_mask`，因为它只画冠脉，不计算距离图。冠脉直接叠加到原来的
+`<case>_intensity_bullseye.png`，不会生成第二张图。
+
+`short_axis_mr` 与 `short_axis_mask` 必须 shape 和 affine 一致；mask 中所有非零标签
+都视为心肌。`Skip` 层不直接采样，其数值由相邻有效层插值得到；`Delete` 层完全
+排除。`--projection 1-4` 保持原逻辑：最靠心尖有效层位于 `r=1`，中心 `r<1`
+使用该层全部有效心肌体素的原始平均值统一填充。`--projection 0-4` 则把最靠心尖
+有效层映射到 `r=0`，并在整个 `r=0–4` 范围显示按角度和层面插值得到的真实数值，
+不再额外覆盖中心。为避免所有角度在极坐标原点汇聚形成放射状伪影，强度命令会在
+`r<1` 内使用 smoothstep 中心融合：`r=0` 收敛为该半径的环向平均值，并平滑恢复
+角度差异，到 `r=1` 时完全保留原始插值结果。该融合仅用于
+`cardiac-intensity-bullseye`。两种模式都把最后一个未 `Delete` 的基底层映射到
+`r=4`；省略 `--projection` 时默认使用 `1-4`。
+
+开启冠脉叠加时，冠脉使用同一个径向框架：`--projection 1-4` 不绘制 `r<1` 的
+冠脉点，`--projection 0-4` 则允许冠脉一直投影到中心。中心感知融合只修改强度
+背景，不修改冠脉线的位置或形状。
+
+当 `reuse_saved_points = true` 且输出目录中已有 `<case>_landmarks.json` 时，程序直接
+复用 AIP/IIP、Skip/Delete 和手动质心。若文件不存在，则自动打开标注界面；设为
+`false` 时始终重新标注，并覆盖同名共享 landmark。因此，只要两条命令的输入短轴
+栈完全一致，就可以与 `cardiac-bullseye` 共用参考点。
+
+输出：
+
+```text
+patient_043_landmarks.json
+patient_043_intensity_bullseye.png
+```
+
+图像采用 Matplotlib 的 `CMRmap` 热力图，colorbar 保留输入 image 的原始数值单位。
+
+## 用法四：从原始 MR 一次完成短轴和牛眼图
 
 命令：
 
@@ -251,7 +374,7 @@ patient_043_distance_world.nii.gz
 patient_043_distance_short_axis.nii.gz
 ```
 
-## 用法四：完整 LGE 流程——手动画正常心肌 ROI 并计算 scar
+## 用法五：完整 LGE 流程——手动画正常心肌 ROI 并计算 scar
 
 命令：
 
@@ -316,7 +439,7 @@ patient_043_lge_scar_bullseye.png
 scar 牛眼图使用 AHA 1–16 的原始体素比例；0% 为白色，比例越高越趋向橙红色。
 PNG 使用安全覆盖逻辑，scar NIfTI 保留原 LGE 的完整物理网格。
 
-## 用法五：使用已有 scar mask 生成 LGE 牛眼图
+## 用法六：使用已有 scar mask 生成 LGE 牛眼图
 
 这条命令适用于 scar mask 已由独立 `lgeMask` 工具或其他方法生成的情况。它不会
 再次选择正常心肌 ROI，也不会重新计算 scar。

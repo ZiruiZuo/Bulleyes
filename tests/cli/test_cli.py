@@ -41,6 +41,95 @@ def test_command_dispatches_to_its_workflow(
     assert calls == [(config_path, workflow_name), sentinel]
 
 
+def test_bullseye_cli_forwards_single_reference_mode(monkeypatch, tmp_path):
+    from cardiac_bullseye import cli
+
+    config_path = tmp_path / "case.toml"
+    config_path.touch()
+    sentinel = object()
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda path, workflow: (calls.append((path, workflow)), sentinel)[1],
+    )
+    monkeypatch.setattr(
+        cli,
+        "generate_bullseye",
+        lambda config, *, landmark_mode: calls.append((config, landmark_mode)),
+    )
+
+    assert cli.bullseye_main(
+        ["--config", str(config_path), "--mode", "single-reference"]
+    ) == 0
+    assert calls == [
+        (config_path, "bullseye"),
+        (sentinel, "single-reference"),
+    ]
+
+
+def test_intensity_bullseye_cli_forwards_single_reference_mode(
+    monkeypatch, tmp_path
+):
+    from cardiac_bullseye import cli
+
+    config_path = tmp_path / "case.toml"
+    config_path.touch()
+    sentinel = object()
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda path, workflow: (calls.append((path, workflow)), sentinel)[1],
+    )
+    monkeypatch.setattr(
+        cli,
+        "generate_intensity_bullseye",
+        lambda config, *, landmark_mode: calls.append((config, landmark_mode)),
+    )
+
+    assert cli.intensity_bullseye_main(
+        ["--config", str(config_path), "--mode", "single-reference"]
+    ) == 0
+    assert calls == [
+        (config_path, "intensity-bullseye"),
+        (sentinel, "single-reference"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("entry_name", "runner_name", "workflow_name"),
+    [
+        ("bullseye_main", "generate_bullseye", "bullseye"),
+        (
+            "intensity_bullseye_main",
+            "generate_intensity_bullseye",
+            "intensity-bullseye",
+        ),
+    ],
+)
+def test_bullseye_commands_forward_zero_to_four_projection(
+    monkeypatch, tmp_path, entry_name, runner_name, workflow_name
+):
+    from cardiac_bullseye import cli
+
+    config_path = tmp_path / "case.toml"
+    config_path.touch()
+    sentinel = object()
+    calls = []
+    monkeypatch.setattr(cli, "load_config", lambda path, workflow: sentinel)
+    monkeypatch.setattr(
+        cli,
+        runner_name,
+        lambda config, *, projection: calls.append((config, projection)),
+    )
+
+    assert getattr(cli, entry_name)(
+        ["--config", str(config_path), "--projection", "0-4"]
+    ) == 0
+    assert calls == [(sentinel, "0-4")]
+
+
 def test_command_returns_one_and_prints_concise_error(monkeypatch, tmp_path, capsys):
     """Configuration errors must produce a nonzero status and useful stderr."""
     from cardiac_bullseye import cli
@@ -87,6 +176,7 @@ def test_run_handles_expected_filesystem_errors_without_a_traceback(
         "pipeline_main",
         "lge_bullseye_main",
         "lge_mask_bullseye_main",
+        "intensity_bullseye_main",
     ],
 )
 def test_command_help_exits_successfully(entry_name, capsys):
@@ -125,4 +215,13 @@ def test_pyproject_registers_external_scar_bullseye_command():
 
     assert scripts["cardiac-lge-mask-bullseye"] == (
         "cardiac_bullseye.cli:lge_mask_bullseye_main"
+    )
+
+
+def test_pyproject_registers_intensity_bullseye_command():
+    pyproject = Path(__file__).parents[2] / "pyproject.toml"
+    scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
+
+    assert scripts["cardiac-intensity-bullseye"] == (
+        "cardiac_bullseye.cli:intensity_bullseye_main"
     )

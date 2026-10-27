@@ -7,6 +7,7 @@ import numpy as np
 matplotlib.use("Agg")
 
 from cardiac_bullseye.distance import (
+    DistanceBullseyeResult,
     compute_distance_bullseye,
     compute_distance_volume_nifti,
     plot_distance_bullseye,
@@ -25,6 +26,19 @@ def test_apex_distance_is_equal_mean_of_segments_13_to_16():
     result = _mean_apical_segment_distances(distance, segment_ids)
 
     assert result == 18.0
+
+
+def test_zero_to_four_distance_plot_does_not_cover_real_center_data():
+    result = DistanceBullseyeResult(
+        distance_mm=np.tile(np.linspace(1.0, 5.0, 5)[:, None], (1, 8)),
+        radial_positions=np.linspace(0.0, 4.0, 5),
+        angles=(np.arange(8, dtype=float) + 0.5) * 2.0 * np.pi / 8,
+        apex_distance_mm=99.0,
+    )
+
+    _figure, axis = plot_distance_bullseye(result, show=False)
+
+    assert len(axis.patches) == 0
 
 
 def test_world_distance_is_minimum_of_three_projected_vessels(tmp_path):

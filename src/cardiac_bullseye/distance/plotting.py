@@ -52,7 +52,11 @@ def plot_distance_bullseye(
 
     figure, axis = plt.subplots(figsize=(8, 8))
     radial_edges = _centers_to_edges(np.asarray(result.radial_positions))
-    radial_edges[0], radial_edges[-1] = 1.0, 4.0
+    continuous_apex = bool(result.radial_positions[0] < 1.0)
+    radial_edges[0], radial_edges[-1] = (
+        0.0 if continuous_apex else 1.0,
+        4.0,
+    )
     angle_step = 2.0 * np.pi / len(result.angles)
     plot_angle_edges = np.arange(len(result.angles) + 1) * angle_step + np.pi
     angle_grid, radius_grid = np.meshgrid(plot_angle_edges, radial_edges)
@@ -68,11 +72,14 @@ def plot_distance_bullseye(
         rasterized=True,
     )
 
-    apex_value = result.apex_distance_mm
-    apex_color = plt.get_cmap(colormap)(
-        np.clip((apex_value - vmin) / (vmax - vmin), 0.0, 1.0)
-    ) if np.isfinite(apex_value) else "#d0d0d0"
-    axis.add_patch(Circle((0.0, 0.0), 1.0, facecolor=apex_color, edgecolor="none"))
+    if not continuous_apex:
+        apex_value = result.apex_distance_mm
+        apex_color = plt.get_cmap(colormap)(
+            np.clip((apex_value - vmin) / (vmax - vmin), 0.0, 1.0)
+        ) if np.isfinite(apex_value) else "#d0d0d0"
+        axis.add_patch(
+            Circle((0.0, 0.0), 1.0, facecolor=apex_color, edgecolor="none")
+        )
     draw_aha17_boundaries(axis, show_numbers=show_numbers)
     colorbar = figure.colorbar(mesh, ax=axis, fraction=0.046, pad=0.04)
     colorbar.set_label("Distance to nearest coronary (mm)")

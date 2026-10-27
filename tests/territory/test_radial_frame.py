@@ -29,6 +29,25 @@ def test_mask_anchors_map_first_occupied_and_last_retained_to_one_and_four():
     )
 
 
+def test_zero_to_four_projection_maps_first_occupied_slice_to_zero():
+    mask = np.zeros((5, 3, 3), dtype=np.uint8)
+    mask[1:5, 1, 1] = 1
+    positions = np.asarray([0.0, 2.0, 6.0, 10.0, 14.0])
+
+    frame = build_mask_anchored_radial_frame(
+        mask,
+        positions,
+        minimum_radius=0.0,
+    )
+
+    assert frame.minimum_radius == 0.0
+    np.testing.assert_allclose(frame.source_radii[1:], [0.0, 4 / 3, 8 / 3, 4.0])
+    np.testing.assert_allclose(
+        frame.map_positions([2.0, 8.0, 14.0]),
+        [0.0, 2.0, 4.0],
+    )
+
+
 def test_mask_anchor_rejects_empty_mask():
     with pytest.raises(ValueError, match="mask is empty"):
         build_mask_anchored_radial_frame(

@@ -40,7 +40,7 @@ def aha17_segment_id_map(
 
     Radii 1-2 are apical, 2-3 mid-cavity, and 3-4 basal. Canonical angles
     receive the same 180-degree display rotation used by the MATLAB reference.
-    Segment 17 is the separate center cap and is not present in this array.
+    When radii below 1 are supplied, those samples belong to segment 17.
     """
 
     radius = np.asarray(radial_positions, dtype=float)
@@ -53,9 +53,11 @@ def aha17_segment_id_map(
     four_index = np.floor(np.mod(plot_degrees - 45.0, 360.0) / 90.0).astype(int)
 
     result = np.zeros((radius.size, angle.size), dtype=np.uint8)
+    apex = (radius >= 0.0) & (radius < 1.0)
     apical = (radius >= 1.0) & (radius < 2.0)
     middle = (radius >= 2.0) & (radius < 3.0)
     basal = (radius >= 3.0) & (radius <= 4.0)
+    result[apex, :] = 17
     result[apical, :] = (13 + four_index)[None, :]
     result[middle, :] = (7 + six_index)[None, :]
     result[basal, :] = (1 + six_index)[None, :]

@@ -13,6 +13,8 @@ matplotlib.use("Agg")
 from cardiac_bullseye.coronary.projection import (
     CardiacGeometry,
     CoronaryPath,
+    _acyclic_voxel_graph_paths,
+    _path_endpoint_degrees,
     _voxel_graph_paths,
     bullseye_slice_radii,
     load_coronary_paths_from_nifti,
@@ -117,6 +119,37 @@ def test_coronary_projection_uses_mask_anchors_and_omits_radius_below_one():
     assert len(projected) == 1
     radii = np.linalg.norm(projected[0].xy, axis=1)
     np.testing.assert_allclose(radii, [1.0, 2.0, 4.0, 5.0])
+
+
+def test_zero_to_four_coronary_projection_keeps_apical_mask_anchor():
+    geometry = _geometry()
+    study, landmarks = _study_and_landmarks()
+    study.territory_mask[0] = 0
+    frame = build_mask_anchored_radial_frame(
+        study.territory_mask,
+        geometry.slice_positions_mm,
+        minimum_radius=0.0,
+    )
+    path = CoronaryPath(
+        label=1,
+        world_points=np.asarray(
+            [
+                [0.0, 2.0, 1.0],
+                [0.0, 2.0, 2.5],
+                [0.0, 2.0, 5.0],
+                [0.0, 2.0, 10.0],
+                [0.0, 2.0, 12.5],
+            ]
+        ),
+    )
+
+    projected = project_coronary_paths(
+        [path], geometry, study, landmarks, radial_frame=frame
+    )
+
+    assert len(projected) == 1
+    radii = np.linalg.norm(projected[0].xy, axis=1)
+    np.testing.assert_allclose(radii, [0.0, 4 / 3, 4.0, 16 / 3])
 
 
 def test_delete_rejects_non_basal_slice():
@@ -295,6 +328,21 @@ def test_extracted_coronary_graph_has_no_closed_cycles(tmp_path):
     assert len(edges) == len(nodes) - 1
     assert (5.0, 4.0, 3.0) in nodes
     assert (3.0, 4.0, 3.0) not in nodes
+
+
+def test_cycle_removal_prunes_new_leaf_that_was_not_an_original_endpoint():
+    skeleton = np.zeros((13, 15, 1), dtype=bool)
+    skeleton[2, 1:14, 0] = True
+    skeleton[2:7, 3, 0] = True
+    skeleton[2:7, 7, 0] = True
+    skeleton[2:7, 11, 0] = True
+    skeleton[6, 3:12, 0] = True
+
+    paths = _acyclic_voxel_graph_paths(skeleton, np.eye(4))
+
+    endpoint_degrees = _path_endpoint_degrees(paths)
+    leaves = {point for point, degree in endpoint_degrees.items() if degree == 1}
+    assert leaves == {(2, 1, 0), (2, 13, 0)}
 
 
 def test_corner_does_not_become_a_spurious_closed_cycle():

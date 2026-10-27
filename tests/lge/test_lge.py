@@ -14,6 +14,7 @@ from cardiac_bullseye.lge import (
     plot_lge_bullseye,
     save_lge_bullseye_npz,
 )
+from cardiac_bullseye.coronary import ProjectedCoronaryPath
 from cardiac_bullseye.territory.models import LandmarkPair, StudyData
 
 
@@ -228,6 +229,124 @@ def test_bullseye_preserves_raw_lge_intensity_and_interpolates_skips():
     assert np.nanmax(result.intensity) == pytest.approx(30.0)
 
 
+def test_bullseye_uses_supplied_mask_anchored_radii():
+    study, landmarks = _constant_slice_study()
+
+    result = compute_lge_bullseye(
+        study,
+        landmarks,
+        angle_count=24,
+        radial_count=4,
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        six_segment_warp=False,
+        source_radii=np.asarray([1.0, 2.0, 4.0]),
+    )
+
+    np.testing.assert_allclose(result.radial_positions, [1.0, 2.0, 3.0, 4.0])
+    np.testing.assert_allclose(result.intensity[:, 0], [10.0, 20.0, 25.0, 30.0])
+
+
+def test_apex_uses_full_myocardium_mean_from_most_apical_valid_slice():
+    study, landmarks = _constant_slice_study(values=(0.0, 20.0, 30.0))
+    apical_mask = study.territory_mask[0] > 0
+    apical_values = np.arange(np.count_nonzero(apical_mask), dtype=float)
+    study.mr[0, apical_mask] = apical_values
+    expected = float(np.mean(apical_values))
+
+    result = compute_lge_bullseye(
+        study,
+        landmarks,
+        angle_count=7,
+        radial_count=4,
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        six_segment_warp=False,
+        source_radii=np.asarray([1.0, 2.0, 4.0]),
+    )
+
+    assert result.apex_intensity == pytest.approx(expected)
+
+
+def test_zero_to_four_intensity_maps_apical_slice_to_center_without_cap():
+    study, landmarks = _constant_slice_study(values=(10.0, 20.0, 30.0))
+    result = compute_lge_bullseye(
+        study,
+        landmarks,
+        angle_count=24,
+        radial_count=5,
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        six_segment_warp=False,
+        source_radii=[0.0, 2.0, 4.0],
+        minimum_radius=0.0,
+    )
+
+    np.testing.assert_allclose(
+        result.radial_positions,
+        [0.0, 1.0, 2.0, 3.0, 4.0],
+    )
+    np.testing.assert_allclose(
+        result.intensity[:, 0],
+        [10.0, 15.0, 20.0, 25.0, 30.0],
+    )
+    _figure, axis = plot_lge_bullseye(result, show=False)
+    assert len(axis.patches) == 0
+
+
+def test_center_blend_removes_polar_singularity_without_changing_radius_one():
+    study, landmarks = _constant_slice_study(values=(10.0, 20.0, 30.0))
+    y, x = np.nonzero(study.territory_mask[0] > 0)
+    study.mr[0, y, x] = x.astype(float)
+    common = dict(
+        angle_count=24,
+        radial_count=9,
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        six_segment_warp=False,
+        source_radii=[0.0, 2.0, 4.0],
+        minimum_radius=0.0,
+    )
+
+    original = compute_lge_bullseye(study, landmarks, **common)
+    blended = compute_lge_bullseye(
+        study,
+        landmarks,
+        center_blend_radius=1.0,
+        **common,
+    )
+
+    np.testing.assert_allclose(blended.intensity[0], np.mean(original.intensity[0]))
+    radius_half = np.flatnonzero(np.isclose(blended.radial_positions, 0.5))[0]
+    assert 0.0 < np.ptp(blended.intensity[radius_half]) < np.ptp(
+        original.intensity[radius_half]
+    )
+    radius_one = np.flatnonzero(np.isclose(blended.radial_positions, 1.0))[0]
+    np.testing.assert_allclose(
+        blended.intensity[radius_one],
+        original.intensity[radius_one],
+    )
+
+
+def test_apex_uses_next_layer_when_apical_layer_is_skipped():
+    study, landmarks = _constant_slice_study(values=(10.0, 20.0, 30.0))
+    landmarks[0] = None
+
+    result = compute_lge_bullseye(
+        study,
+        landmarks,
+        angle_count=24,
+        radial_count=4,
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        six_segment_warp=False,
+        source_radii=np.asarray([1.0, 2.0, 4.0]),
+    )
+
+    assert result.apex_intensity == pytest.approx(20.0)
+    np.testing.assert_allclose(result.intensity[0], 20.0)
+
+
 def test_deleted_basal_slice_promotes_last_retained_slice_to_outer_ring():
     study, landmarks = _constant_slice_study()
 
@@ -270,3 +389,65 @@ def test_lge_outputs_include_numeric_values_and_png(tmp_path):
         np.testing.assert_array_equal(payload["intensity"], result.intensity)
         assert float(payload["apex_intensity"]) == pytest.approx(10.0)
     assert png_path.is_file() and png_path.stat().st_size > 1000
+
+
+def test_intensity_plot_accepts_a_generic_native_unit_colorbar_label():
+    study, landmarks = _constant_slice_study()
+    result = compute_lge_bullseye(
+        study,
+        landmarks,
+        angle_count=24,
+        radial_count=9,
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        six_segment_warp=False,
+    )
+
+    figure, _axis = plot_lge_bullseye(
+        result,
+        show=False,
+        colorbar_label="Image intensity (native units)",
+    )
+
+    assert figure.axes[-1].get_ylabel() == "Image intensity (native units)"
+
+
+def test_intensity_plot_can_overlay_styled_coronary_paths():
+    study, landmarks = _constant_slice_study()
+    result = compute_lge_bullseye(
+        study,
+        landmarks,
+        angle_count=24,
+        radial_count=9,
+        angular_smoothing_sigma_deg=0.0,
+        radial_smoothing_sigma=0.0,
+        six_segment_warp=False,
+    )
+    coronary = ProjectedCoronaryPath(
+        label=2,
+        xy=np.asarray([[0.0, 1.0], [0.0, 5.0]], dtype=float),
+    )
+
+    figure, axis = plot_lge_bullseye(
+        result,
+        show=False,
+        coronary_paths=[coronary],
+        coronary_label_colors={2: "#123456"},
+        coronary_label_names={2: "Coronary LCX"},
+        coronary_linewidth=3.0,
+    )
+
+    vessel_lines = [line for line in axis.lines if line.get_zorder() == 20]
+    assert len(vessel_lines) == 1
+    assert vessel_lines[0].get_color() == "#123456"
+    assert vessel_lines[0].get_linewidth() == pytest.approx(3.0)
+    assert "Coronary LCX" in {
+        text.get_text() for text in axis.get_legend().get_texts()
+    }
+    assert axis.get_xlim()[1] > 5.0
+    figure.canvas.draw()
+    renderer = figure.canvas.get_renderer()
+    legend_bounds = axis.get_legend().get_window_extent(renderer)
+    axis_bounds = axis.get_window_extent(renderer)
+    assert axis_bounds.x0 <= legend_bounds.x0 < axis_bounds.x0 + axis_bounds.width / 2
+    assert axis_bounds.y0 + axis_bounds.height / 2 < legend_bounds.y1 <= axis_bounds.y1

@@ -280,6 +280,7 @@ def _acyclic_voxel_graph_paths(
         end = tuple(int(value) for value in path[-1])
         if union(start, end):
             retained.append((index, path))
+    retained = _prune_artificial_cycle_leaves(retained, traced)
     return [path for _, path in sorted(retained, key=lambda item: item[0])]
 
 
@@ -292,6 +293,70 @@ def _path_endpoint_degrees(
             node = tuple(int(value) for value in point)
             degrees[node] = degrees.get(node, 0) + 1
     return degrees
+
+
+def _prune_artificial_cycle_leaves(
+    retained: list[tuple[int, NDArray[np.int32]]],
+    original: list[NDArray[np.int32]],
+) -> list[tuple[int, NDArray[np.int32]]]:
+    """Remove leaf stubs created only by breaking cycles in the graph."""
+
+    original_degrees = _path_endpoint_degrees(original)
+    original_leaves = {
+        point for point, degree in original_degrees.items() if degree == 1
+    }
+    active = list(retained)
+    while active:
+        paths = [path for _, path in active]
+        degrees = _path_endpoint_degrees(paths)
+
+        parent = {point: point for point in degrees}
+
+        def find(
+            point: tuple[int, int, int],
+        ) -> tuple[int, int, int]:
+            while parent[point] != point:
+                parent[point] = parent[parent[point]]
+                point = parent[point]
+            return point
+
+        def union(
+            left: tuple[int, int, int], right: tuple[int, int, int]
+        ) -> None:
+            left_root, right_root = find(left), find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        endpoints: list[
+            tuple[tuple[int, int, int], tuple[int, int, int]]
+        ] = []
+        for path in paths:
+            start = tuple(int(value) for value in path[0])
+            end = tuple(int(value) for value in path[-1])
+            endpoints.append((start, end))
+            union(start, end)
+
+        terminal_counts: dict[tuple[int, int, int], int] = {}
+        for point in original_leaves:
+            if point in parent:
+                root = find(point)
+                terminal_counts[root] = terminal_counts.get(root, 0) + 1
+
+        artificial_leaves = {
+            point
+            for point, degree in degrees.items()
+            if degree == 1
+            and point not in original_leaves
+            and terminal_counts.get(find(point), 0) >= 2
+        }
+        if not artificial_leaves:
+            return active
+        active = [
+            item
+            for item, (start, end) in zip(active, endpoints)
+            if start not in artificial_leaves and end not in artificial_leaves
+        ]
+    return active
 
 
 def _split_world_path_by_label(
@@ -568,7 +633,7 @@ def project_coronary_paths(
             valid_height = heights >= 0.0
         else:
             radius = radial_frame.map_positions(heights)
-            valid_height = radius >= 1.0
+            valid_height = radius >= radial_frame.minimum_radius
         plot_angles = canonical + np.pi
         xy = np.column_stack(
             [radius * np.cos(plot_angles), radius * np.sin(plot_angles)]

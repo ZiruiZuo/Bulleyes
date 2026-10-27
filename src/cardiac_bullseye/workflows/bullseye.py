@@ -25,10 +25,17 @@ from ..territory.io import (
     load_deleted_slice_indices,
     load_study_nifti,
 )
-from ..territory.landmarks import load_saved_landmarks, select_landmarks_interactively
+from ..territory.landmarks import (
+    load_saved_landmarks,
+    select_landmarks_interactively,
+    select_single_reference_interactively,
+)
 from ..territory.mapping import compute_bullseye
 from ..territory.plotting import save_bullseye_figure
-from ..territory.radial import build_mask_anchored_radial_frame
+from ..territory.radial import (
+    build_mask_anchored_radial_frame,
+    projection_minimum_radius,
+)
 from .short_axis import ShortAxisOutputs
 
 
@@ -43,8 +50,16 @@ class BullseyeOutputs:
 def generate_bullseye(
     config: AppConfig,
     short_axis_outputs: ShortAxisOutputs | None = None,
+    *,
+    landmark_mode: str = "per-slice",
+    projection: str = "1-4",
 ) -> BullseyeOutputs:
     """Generate territory and distance bullseyes for one configured case."""
+    if landmark_mode not in {"per-slice", "single-reference"}:
+        raise ValueError(
+            "landmark_mode must be 'per-slice' or 'single-reference'"
+        )
+    minimum_radius = projection_minimum_radius(projection)
     if short_axis_outputs is None:
         validate_config(config, "bullseye")
         mr_path = config.bullseye.short_axis_mr
@@ -103,10 +118,22 @@ def generate_bullseye(
             "Geometry JSON and short-axis study have different slice counts"
         )
 
-    print("3/8 Load saved AIP/IIP points..." if config.bullseye.reuse_saved_points else "3/8 Select AIP followed by IIP on each slice...")
+    if config.bullseye.reuse_saved_points:
+        print("3/8 Load saved AIP/IIP points...")
+    elif landmark_mode == "single-reference":
+        print("3/8 Select AIP/IIP on one reference slice...")
+    else:
+        print("3/8 Select AIP followed by IIP on each slice...")
     landmark_path = config.case.output_path("landmarks.json")
     if config.bullseye.reuse_saved_points:
         landmarks = load_saved_landmarks(study, landmark_path)
+    elif landmark_mode == "single-reference":
+        landmarks = select_single_reference_interactively(
+            study,
+            landmark_path,
+            resume_existing=False,
+            transpose_for_display=True,
+        )
     else:
         landmarks = select_landmarks_interactively(
             study,
@@ -137,12 +164,27 @@ def generate_bullseye(
         study.territory_mask,
         cardiac_geometry.slice_positions_mm,
         deleted_slice_indices,
+        minimum_radius=minimum_radius,
     )
     source_radii = radial_frame.source_radii
+    center_blend_radius = None
+    if minimum_radius == 0.0:
+        positive_valid_radii = [
+            float(source_radii[index])
+            for index, pair in enumerate(landmarks)
+            if pair is not None
+            and index not in deleted_slice_indices
+            and source_radii[index] > 0.0
+            and np.any(study.territory_mask[index] != 0)
+        ]
+        center_blend_radius = (
+            positive_valid_radii[0] if positive_valid_radii else 1.0
+        )
     print(
         "    Radial anchors: "
         f"slice {radial_frame.apical_index + 1} "
-        f"({radial_frame.apical_position:.2f} mm) -> r=1; "
+        f"({radial_frame.apical_position:.2f} mm) -> "
+        f"r={radial_frame.minimum_radius:g}; "
         f"slice {radial_frame.basal_index + 1} "
         f"({radial_frame.basal_position:.2f} mm) -> r=4"
     )
@@ -177,9 +219,13 @@ def generate_bullseye(
         radial_count=config.bullseye.radial_count,
         angular_smoothing_sigma_deg=config.bullseye.angular_smoothing_sigma_deg,
         radial_smoothing_sigma=config.bullseye.radial_smoothing_sigma,
+        center_blend_radius=center_blend_radius,
         six_segment_warp=config.bullseye.six_segment_warp,
-        apex_territory=config.bullseye.apex_territory,
+        apex_territory=(
+            config.bullseye.apex_territory if minimum_radius == 1.0 else None
+        ),
         source_radii=source_radii,
+        minimum_radius=minimum_radius,
         deleted_slice_indices=deleted_slice_indices,
         rescale_deleted_base=False,
         center_overrides=center_overrides,

@@ -24,15 +24,23 @@ pixel_spacing_mm = 1.25
 fov_mm = [192.0, 192.0]
 
 [bullseye]
-# 以下三项仅供 cardiac-bullseye 的独立运行使用；
-# cardiac-pipeline 使用本次短轴规划刚生成的文件，因此会忽略它们。
+# short_axis_mr 和 short_axis_mask 同时供 cardiac-bullseye 与
+# cardiac-intensity-bullseye 使用。geometry_json 供 cardiac-bullseye 使用；
+# 当下方 intensity_coronary_overlay = true 时也供强度牛眼图投影冠脉。
+# cardiac-pipeline 使用本次短轴规划刚生成的文件，因此会忽略这里的三项路径。
 short_axis_mr = 'outputs/patient_043_short_axis.nii.gz'
 short_axis_mask = 'outputs/patient_043_short_axis_mask.nii.gz'
 geometry_json = 'outputs/patient_043_geometry.json'
-# false：每次重新标 AIP/IIP；true：读取 <case>_landmarks.json 并跳过窗口。
+# false：每次重新标 AIP/IIP；true：读取两种 bullseye 命令共享的
+# <case>_landmarks.json。对于 cardiac-intensity-bullseye，文件不存在时会自动打开窗口。
 reuse_saved_points = false
 
-# 冠脉 mask 和原始世界空间心肌 mask 是牛眼图与完整流程的必需输入。
+# false（默认）：强度牛眼图不读取 geometry_json 或 coronary_mask；
+# true：把冠脉投影到同一张强度牛眼图上。
+intensity_coronary_overlay = false
+
+# coronary_mask 是 cardiac-bullseye 的必需输入；开启上述强度图冠脉叠加时也必需。
+# world_myocardium_mask 只用于 cardiac-bullseye 的冠脉距离计算。
 coronary_mask = 'inputs/patient_043_coronary.nii.gz'
 world_myocardium_mask = 'inputs/patient_043_myocardium.nii.gz'
 

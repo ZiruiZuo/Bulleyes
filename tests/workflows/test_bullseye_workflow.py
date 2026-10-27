@@ -43,6 +43,56 @@ def test_bullseye_workflow_requests_a_fresh_transposed_nifti_annotation_view(
         module.generate_bullseye(app_config)
 
 
+def test_bullseye_workflow_uses_single_reference_annotation_mode(
+    monkeypatch, app_config
+):
+    from cardiac_bullseye.workflows import bullseye as module
+
+    study = StudyData(
+        mr=np.ones((1, 4, 6), dtype=float),
+        territory_mask=np.ones((1, 4, 6), dtype=np.uint8),
+        slice_positions=np.asarray([0.0]),
+    )
+    geometry = SimpleNamespace(slice_positions_mm=np.asarray([0.0]))
+    calls = []
+    monkeypatch.setattr(module, "load_cardiac_geometry", lambda _path: geometry)
+    monkeypatch.setattr(
+        module, "validate_geometry_against_short_axis_nifti", lambda *_args: None
+    )
+    monkeypatch.setattr(module, "load_study_nifti", lambda *_args, **_kwargs: study)
+    monkeypatch.setattr(
+        module,
+        "select_landmarks_interactively",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("per-slice annotation UI must not open")
+        ),
+    )
+
+    def select_single_reference(
+        selected_study,
+        _output_path,
+        *,
+        resume_existing,
+        transpose_for_display,
+    ):
+        calls.append(
+            (selected_study, resume_existing, transpose_for_display)
+        )
+        return [None]
+
+    monkeypatch.setattr(
+        module,
+        "select_single_reference_interactively",
+        select_single_reference,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="No slice has a valid AIP/IIP pair"):
+        module.generate_bullseye(app_config, landmark_mode="single-reference")
+
+    assert calls == [(study, False, True)]
+
+
 def test_bullseye_workflow_reuses_landmarks_without_opening_annotation_ui(
     monkeypatch, app_config
 ):
@@ -77,7 +127,28 @@ def test_bullseye_workflow_reuses_landmarks_without_opening_annotation_ui(
         module.generate_bullseye(config)
 
 
-def test_bullseye_workflow_shares_mask_anchored_frame(monkeypatch, app_config):
+@pytest.mark.parametrize(
+    (
+        "projection",
+        "expected_radii",
+        "minimum_radius",
+        "expected_apex",
+        "expected_center_blend_radius",
+    ),
+    [
+        ("1-4", [-0.5, 1.0, 4.0], 1.0, 3, None),
+        ("0-4", [-2.0, 0.0, 4.0], 0.0, None, 4.0),
+    ],
+)
+def test_bullseye_workflow_shares_mask_anchored_frame(
+    monkeypatch,
+    app_config,
+    projection,
+    expected_radii,
+    minimum_radius,
+    expected_apex,
+    expected_center_blend_radius,
+):
     from cardiac_bullseye.workflows import bullseye as module
 
     mask = np.zeros((3, 4, 4), dtype=np.uint8)
@@ -99,6 +170,10 @@ def test_bullseye_workflow_shares_mask_anchored_frame(monkeypatch, app_config):
     ]
     manual_centers = [None, (1.25, 1.5), None]
     captured = {}
+    app_config = replace(
+        app_config,
+        bullseye=replace(app_config.bullseye, apex_territory=3),
+    )
 
     monkeypatch.setattr(module, "validate_config", lambda *_args: None)
     monkeypatch.setattr(module, "load_cardiac_geometry", lambda _path: geometry)
@@ -129,6 +204,8 @@ def test_bullseye_workflow_shares_mask_anchored_frame(monkeypatch, app_config):
 
     def capture_territory(*_args, **kwargs):
         captured["territory_radii"] = np.asarray(kwargs["source_radii"])
+        captured["apex_territory"] = kwargs.get("apex_territory")
+        captured["center_blend_radius"] = kwargs.get("center_blend_radius")
         captured["territory_rescale"] = kwargs.get("rescale_deleted_base")
         captured["territory_centers"] = kwargs.get("center_overrides")
         return object()
@@ -174,12 +251,15 @@ def test_bullseye_workflow_shares_mask_anchored_frame(monkeypatch, app_config):
     monkeypatch.setattr(module, "compute_distance_bullseye", capture_distance)
     monkeypatch.setattr(module, "plot_distance_bullseye", lambda *_args, **_kwargs: None)
 
-    module.generate_bullseye(app_config)
+    module.generate_bullseye(app_config, projection=projection)
 
-    np.testing.assert_allclose(captured["territory_radii"], [-0.5, 1.0, 4.0])
-    np.testing.assert_allclose(captured["distance_radii"], [-0.5, 1.0, 4.0])
+    np.testing.assert_allclose(captured["territory_radii"], expected_radii)
+    np.testing.assert_allclose(captured["distance_radii"], expected_radii)
     assert captured["coronary_frame"].apical_index == 1
     assert captured["coronary_frame"].basal_index == 2
+    assert captured["coronary_frame"].minimum_radius == minimum_radius
+    assert captured["apex_territory"] == expected_apex
+    assert captured["center_blend_radius"] == expected_center_blend_radius
     assert captured["territory_rescale"] is False
     assert captured["distance_rescale"] is False
     assert captured["territory_centers"] == manual_centers

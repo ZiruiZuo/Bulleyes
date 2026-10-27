@@ -166,6 +166,30 @@ def _interpolate_slice_probabilities(
     return output
 
 
+def _blend_polar_center_probabilities(
+    probabilities: NDArray[np.float64],
+    radial_positions: NDArray[np.float64],
+    blend_radius: float,
+) -> NDArray[np.float64]:
+    """Fade angular territory contrast to zero at the polar origin."""
+
+    valid = np.isfinite(probabilities)
+    counts = valid.sum(axis=1, keepdims=True)
+    ring_means = np.divide(
+        np.nansum(probabilities, axis=1, keepdims=True),
+        counts,
+        out=np.full(
+            (probabilities.shape[0], 1, probabilities.shape[2]),
+            np.nan,
+            dtype=float,
+        ),
+        where=counts > 0,
+    )
+    normalized = np.clip(radial_positions / blend_radius, 0.0, 1.0)
+    weights = normalized * normalized * (3.0 - 2.0 * normalized)
+    return ring_means + weights[:, None, None] * (probabilities - ring_means)
+
+
 def remove_deleted_slices_from_radial_axis(
     values: ArrayLike,
     source_radii: ArrayLike,
@@ -229,7 +253,8 @@ def infer_apex_territory(
         raise ValueError(
             "probabilities and radial_positions have incompatible shapes"
         )
-    selected = values[(radii >= 1.0) & (radii < 2.0)]
+    center = values[(radii >= 0.0) & (radii < 1.0)]
+    selected = center if center.size else values[(radii >= 1.0) & (radii < 2.0)]
     finite_counts = np.isfinite(selected).sum(axis=(0, 1))
     scores = np.divide(
         np.nansum(selected, axis=(0, 1)),
@@ -247,8 +272,10 @@ def build_bullseye(
     slice_positions: ArrayLike,
     *,
     source_radii: ArrayLike | None = None,
+    minimum_radius: float = 1.0,
     radial_count: int = 300,
     radial_smoothing_sigma: float = 1.5,
+    center_blend_radius: float | None = None,
     apex_territory: int | None = None,
     deleted_slice_indices: Iterable[int] = (),
     rescale_deleted_base: bool = True,
@@ -269,6 +296,12 @@ def build_bullseye(
         raise ValueError("radial_count must be at least 3")
     if radial_smoothing_sigma < 0:
         raise ValueError("radial_smoothing_sigma cannot be negative")
+    if center_blend_radius is not None and (
+        not np.isfinite(center_blend_radius) or center_blend_radius <= 0.0
+    ):
+        raise ValueError("center_blend_radius must be positive and finite")
+    if not np.isfinite(minimum_radius) or not 0.0 <= minimum_radius < 4.0:
+        raise ValueError("minimum_radius must be finite and in the range [0, 4)")
     if not np.isfinite(probabilities).any():
         raise ValueError("No valid slice probabilities are available")
 
@@ -290,7 +323,7 @@ def build_bullseye(
         )
         source_radii_array = 1.0 + 3.0 * normalized_positions
 
-    radial_positions = np.linspace(1.0, 4.0, radial_count)
+    radial_positions = np.linspace(minimum_radius, 4.0, radial_count)
     radial_probabilities, radial_source_radii = (
         remove_deleted_slices_from_radial_axis(
             probabilities,
@@ -310,6 +343,12 @@ def build_bullseye(
             sigma=radial_smoothing_sigma,
             axis=0,
             mode="nearest",
+        )
+    if center_blend_radius is not None:
+        dense_probabilities = _blend_polar_center_probabilities(
+            dense_probabilities,
+            radial_positions,
+            center_blend_radius,
         )
     dense_probabilities = _normalize_probabilities(dense_probabilities)
 
@@ -346,9 +385,11 @@ def compute_bullseye(
     radial_count: int = 300,
     angular_smoothing_sigma_deg: float = 1.5,
     radial_smoothing_sigma: float = 1.5,
+    center_blend_radius: float | None = None,
     six_segment_warp: bool = True,
     apex_territory: int | None = None,
     source_radii: ArrayLike | None = None,
+    minimum_radius: float = 1.0,
     deleted_slice_indices: Iterable[int] = (),
     rescale_deleted_base: bool = True,
     center_overrides: Iterable[tuple[float, float] | None] | None = None,
@@ -367,8 +408,10 @@ def compute_bullseye(
         slice_probabilities,
         study.slice_positions,
         source_radii=source_radii,
+        minimum_radius=minimum_radius,
         radial_count=radial_count,
         radial_smoothing_sigma=radial_smoothing_sigma,
+        center_blend_radius=center_blend_radius,
         apex_territory=apex_territory,
         deleted_slice_indices=deleted_slice_indices,
         rescale_deleted_base=rescale_deleted_base,

@@ -77,6 +77,83 @@ reuse_saved_points = true
     assert config.lge_mask_bullseye.reuse_saved_points is True
 
 
+def test_intensity_bullseye_requires_only_short_axis_image_and_mask(tmp_path):
+    image = tmp_path / "short_axis.nii.gz"
+    mask = tmp_path / "short_axis_mask.nii.gz"
+    image.touch()
+    mask.touch()
+    config_path = write_config(
+        tmp_path,
+        f"""
+[case]
+id = "case"
+[bullseye]
+short_axis_mr = '{image.as_posix()}'
+short_axis_mask = '{mask.as_posix()}'
+""",
+    )
+
+    config = load_config(config_path, "intensity-bullseye")
+
+    assert config.bullseye.short_axis_mr == image
+    assert config.bullseye.short_axis_mask == mask
+    assert config.bullseye.intensity_coronary_overlay is False
+
+
+def test_intensity_bullseye_parses_optional_coronary_overlay(tmp_path):
+    image = tmp_path / "short_axis.nii.gz"
+    mask = tmp_path / "short_axis_mask.nii.gz"
+    geometry = tmp_path / "geometry.json"
+    coronary = tmp_path / "coronary.nii.gz"
+    for path in (image, mask, geometry, coronary):
+        path.touch()
+    config_path = write_config(
+        tmp_path,
+        f"""
+[case]
+id = "case"
+[bullseye]
+short_axis_mr = '{image.as_posix()}'
+short_axis_mask = '{mask.as_posix()}'
+intensity_coronary_overlay = true
+geometry_json = '{geometry.as_posix()}'
+coronary_mask = '{coronary.as_posix()}'
+""",
+    )
+
+    config = load_config(config_path, "intensity-bullseye")
+
+    assert config.bullseye.intensity_coronary_overlay is True
+    assert config.bullseye.geometry_json == geometry
+    assert config.bullseye.coronary_mask == coronary
+
+
+def test_intensity_coronary_overlay_requires_geometry_and_coronary_mask(tmp_path):
+    image = tmp_path / "short_axis.nii.gz"
+    mask = tmp_path / "short_axis_mask.nii.gz"
+    image.touch()
+    mask.touch()
+    config_path = write_config(
+        tmp_path,
+        f"""
+[case]
+id = "case"
+[bullseye]
+short_axis_mr = '{image.as_posix()}'
+short_axis_mask = '{mask.as_posix()}'
+intensity_coronary_overlay = true
+""",
+    )
+
+    with pytest.raises(ConfigError) as caught:
+        load_config(config_path, "intensity-bullseye")
+
+    message = str(caught.value)
+    assert "bullseye.geometry_json" in message
+    assert "bullseye.coronary_mask" in message
+    assert "bullseye.world_myocardium_mask" not in message
+
+
 def test_short_axis_parses_optional_orientation_reference(tmp_path):
     source = tmp_path / "source.nii.gz"
     reference = tmp_path / "lge_sax.nii.gz"

@@ -12,7 +12,12 @@ except ModuleNotFoundError:  # pragma: no cover - used only by Python 3.10
 
 
 WorkflowName = Literal[
-    "short-axis", "bullseye", "pipeline", "lge-bullseye", "lge-mask-bullseye"
+    "short-axis",
+    "bullseye",
+    "pipeline",
+    "lge-bullseye",
+    "lge-mask-bullseye",
+    "intensity-bullseye",
 ]
 
 
@@ -61,6 +66,7 @@ class BullseyeConfig:
     angular_smoothing_sigma_deg: float = 1.5
     radial_smoothing_sigma: float = 1.5
     six_segment_warp: bool = True
+    intensity_coronary_overlay: bool = False
     coronary_mask_is_centerline: bool = False
     coronary_min_path_length_mm: float = 2.0
     coronary_resample_step_mm: float = 0.75
@@ -235,6 +241,18 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
             ("bullseye.world_myocardium_mask", config.bullseye.world_myocardium_mask),
         ):
             _input_error(errors, name, path)
+    elif workflow == "intensity-bullseye":
+        for name, path in (
+            ("bullseye.short_axis_mr", config.bullseye.short_axis_mr),
+            ("bullseye.short_axis_mask", config.bullseye.short_axis_mask),
+        ):
+            _input_error(errors, name, path)
+        if config.bullseye.intensity_coronary_overlay:
+            for name, path in (
+                ("bullseye.geometry_json", config.bullseye.geometry_json),
+                ("bullseye.coronary_mask", config.bullseye.coronary_mask),
+            ):
+                _input_error(errors, name, path)
     elif workflow == "pipeline":
         for name, path in (
             ("short_axis.source_mr", config.short_axis.source_mr),
@@ -259,7 +277,8 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
     else:
         errors.append(
             "workflow must be one of short-axis, bullseye, pipeline, "
-            f"lge-bullseye, lge-mask-bullseye; got {workflow!r}"
+            "lge-bullseye, lge-mask-bullseye, intensity-bullseye; "
+            f"got {workflow!r}"
         )
 
     _positive_number(errors, "short_axis.slice_spacing_mm", config.short_axis.slice_spacing_mm)
@@ -276,7 +295,6 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
             "short_axis.orientation_reference",
             config.short_axis.orientation_reference,
         )
-
     _positive_integer(errors, "bullseye.angle_count", config.bullseye.angle_count)
     _positive_integer(errors, "bullseye.radial_count", config.bullseye.radial_count)
     _nonnegative_number(
@@ -384,6 +402,9 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
             ),
             radial_smoothing_sigma=bullseye_data.get("radial_smoothing_sigma", 1.5),
             six_segment_warp=bullseye_data.get("six_segment_warp", True),
+            intensity_coronary_overlay=bullseye_data.get(
+                "intensity_coronary_overlay", False
+            ),
             coronary_mask_is_centerline=bullseye_data.get(
                 "coronary_mask_is_centerline", False
             ),

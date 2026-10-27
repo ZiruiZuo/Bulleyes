@@ -106,3 +106,59 @@ def test_preanchored_radii_are_not_rescaled_after_basal_deletion():
 
     np.testing.assert_array_equal(retained[:, 0], [0.0, 1.0, 2.0, 3.0])
     np.testing.assert_allclose(radii, [0.0, 1.0, 2.5, 4.0])
+
+
+def test_zero_to_four_bullseye_maps_real_data_through_segment_seventeen():
+    probabilities = np.zeros((3, 8, 3), dtype=float)
+    probabilities[0, :, 1] = 1.0
+    probabilities[1:, :, 0] = 1.0
+
+    result = build_bullseye(
+        probabilities,
+        np.asarray([0.0, 1.0, 2.0]),
+        source_radii=[0.0, 2.0, 4.0],
+        minimum_radius=0.0,
+        radial_count=9,
+        radial_smoothing_sigma=0.0,
+    )
+
+    assert result.radial_positions[0] == 0.0
+    assert np.all(result.aha_segment_ids[result.radial_positions < 1.0] == 17)
+    assert result.apex_territory == 2
+
+    _figure, axis = plot_territory_bullseye(result, show=False)
+    assert len(axis.patches) == 0
+
+
+def test_center_blend_removes_polar_singularity_without_changing_blend_edge():
+    probabilities = np.zeros((3, 4, 3), dtype=float)
+    probabilities[:, :2, 0] = 1.0
+    probabilities[:, 2:, 2] = 1.0
+    common = dict(
+        source_radii=[0.0, 2.0, 4.0],
+        minimum_radius=0.0,
+        radial_count=9,
+        radial_smoothing_sigma=0.0,
+    )
+
+    original = build_bullseye(probabilities, np.arange(3.0), **common)
+    blended = build_bullseye(
+        probabilities,
+        np.arange(3.0),
+        center_blend_radius=1.0,
+        **common,
+    )
+
+    np.testing.assert_allclose(
+        blended.probabilities[0],
+        [[0.5, 0.0, 0.5]] * 4,
+    )
+    radius_half = np.flatnonzero(np.isclose(blended.radial_positions, 0.5))[0]
+    assert 0.0 < np.ptp(blended.probabilities[radius_half, :, 0]) < np.ptp(
+        original.probabilities[radius_half, :, 0]
+    )
+    radius_one = np.flatnonzero(np.isclose(blended.radial_positions, 1.0))[0]
+    np.testing.assert_allclose(
+        blended.probabilities[radius_one],
+        original.probabilities[radius_one],
+    )

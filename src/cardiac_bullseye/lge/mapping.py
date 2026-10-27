@@ -131,6 +131,26 @@ def _radial_interpolate(
     return output
 
 
+def _blend_polar_center(
+    values: NDArray[np.float64],
+    radial_positions: NDArray[np.float64],
+    blend_radius: float,
+) -> NDArray[np.float64]:
+    """Fade angular contrast to zero at the polar origin using smoothstep."""
+
+    valid = np.isfinite(values)
+    counts = valid.sum(axis=1, keepdims=True)
+    ring_means = np.divide(
+        np.nansum(values, axis=1, keepdims=True),
+        counts,
+        out=np.full((values.shape[0], 1), np.nan, dtype=float),
+        where=counts > 0,
+    )
+    normalized = np.clip(radial_positions / blend_radius, 0.0, 1.0)
+    weights = normalized * normalized * (3.0 - 2.0 * normalized)
+    return ring_means + weights[:, None] * (values - ring_means)
+
+
 def compute_lge_bullseye(
     study: StudyData,
     landmarks: list[LandmarkPair | None],
@@ -143,6 +163,9 @@ def compute_lge_bullseye(
     deleted_slice_indices: Iterable[int] = (),
     include_apex: bool = True,
     center_overrides: Iterable[tuple[float, float] | None] | None = None,
+    source_radii: Iterable[float] | None = None,
+    minimum_radius: float = 1.0,
+    center_blend_radius: float | None = None,
 ) -> LgeBullseyeResult:
     """Create a continuous bullseye while retaining native LGE intensities."""
 
@@ -150,6 +173,12 @@ def compute_lge_bullseye(
         raise ValueError("radial_count must be at least 3")
     if radial_smoothing_sigma < 0.0:
         raise ValueError("radial_smoothing_sigma cannot be negative")
+    if not np.isfinite(minimum_radius) or not 0.0 <= minimum_radius < 4.0:
+        raise ValueError("minimum_radius must be finite and in the range [0, 4)")
+    if center_blend_radius is not None and (
+        not np.isfinite(center_blend_radius) or center_blend_radius <= 0.0
+    ):
+        raise ValueError("center_blend_radius must be positive and finite")
 
     profiles = compute_slice_lge_profiles(
         study,
@@ -159,20 +188,33 @@ def compute_lge_bullseye(
         six_segment_warp=six_segment_warp,
         center_overrides=center_overrides,
     )
-    if study.slice_count == 1:
+    supplied_source_radii = source_radii is not None
+    if source_radii is not None:
+        source_radii = np.asarray(tuple(source_radii), dtype=float)
+        if source_radii.shape != (study.slice_count,):
+            raise ValueError("source_radii must have one value per slice")
+        if not np.isfinite(source_radii).all() or (
+            source_radii.size > 1 and not np.all(np.diff(source_radii) > 0.0)
+        ):
+            raise ValueError("source_radii must be finite and strictly increasing")
+    elif study.slice_count == 1:
         source_radii = np.asarray([0.0])
     else:
         positions = np.asarray(study.slice_positions, dtype=float)
         source_radii = 4.0 * (positions - positions[0]) / (
             positions[-1] - positions[0]
         )
+    deleted = set(deleted_slice_indices)
     retained_profiles, retained_radii = remove_deleted_slices_from_radial_axis(
-        profiles, source_radii, deleted_slice_indices
+        profiles,
+        source_radii,
+        deleted,
+        rescale_retained_base=not supplied_source_radii,
     )
     if not np.isfinite(retained_profiles).any():
         raise ValueError("No valid LGE intensities remain after deletion")
 
-    radial_positions = np.linspace(1.0, 4.0, radial_count)
+    radial_positions = np.linspace(minimum_radius, 4.0, radial_count)
     intensity = _radial_interpolate(
         retained_profiles, retained_radii, radial_positions
     )
@@ -183,12 +225,23 @@ def compute_lge_bullseye(
             axis=0,
             mode="nearest",
         )
+    if center_blend_radius is not None:
+        intensity = _blend_polar_center(
+            intensity,
+            radial_positions,
+            center_blend_radius,
+        )
 
     apex_intensity = np.nan
     if include_apex:
-        for profile in retained_profiles:
-            if np.isfinite(profile).any():
-                apex_intensity = float(np.nanmean(profile))
+        for slice_index, profile in enumerate(profiles):
+            if slice_index in deleted or not np.isfinite(profile).any():
+                continue
+            mask = (study.territory_mask[slice_index] > 0) & np.isfinite(
+                study.mr[slice_index]
+            )
+            if mask.any():
+                apex_intensity = float(np.mean(study.mr[slice_index][mask]))
                 break
     angles = (
         np.arange(angle_count, dtype=float) + 0.5

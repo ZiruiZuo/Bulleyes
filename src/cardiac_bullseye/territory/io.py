@@ -200,6 +200,8 @@ def save_landmarks_json(
     deleted_slice_indices: Iterable[int] = (),
     image_shape: tuple[int, ...] | None = None,
     center_overrides: Iterable[tuple[float, float] | None] | None = None,
+    annotation_mode: str | None = None,
+    reference_slice_index: int | None = None,
 ) -> None:
     """Save landmarks atomically enough for an interactive annotation session."""
 
@@ -207,6 +209,14 @@ def save_landmarks_json(
     invalid = sorted(index for index in deleted if index < 0 or index >= len(landmarks))
     if invalid:
         raise ValueError(f"Deleted slice indices are out of range: {invalid}")
+    if annotation_mode not in {None, "per-slice", "single-reference"}:
+        raise ValueError("Unknown landmark annotation mode")
+    if reference_slice_index is not None:
+        reference_slice_index = int(reference_slice_index)
+        if not 0 <= reference_slice_index < len(landmarks):
+            raise ValueError("reference_slice_index is outside the landmark stack")
+        if reference_slice_index in deleted:
+            raise ValueError("The reference slice cannot be deleted")
     centers = (
         [None] * len(landmarks)
         if center_overrides is None
@@ -252,6 +262,15 @@ def save_landmarks_json(
     payload = {
         "coordinate_convention": "zero-based (x, y) image pixel coordinates",
         "point_order": ["AIP", "IIP"],
+        **({"annotation_mode": annotation_mode} if annotation_mode else {}),
+        **(
+            {
+                "reference_slice_index": reference_slice_index,
+                "reference_slice_number": reference_slice_index + 1,
+            }
+            if reference_slice_index is not None
+            else {}
+        ),
         **(
             {"image_shape": [int(value) for value in image_shape]}
             if image_shape is not None

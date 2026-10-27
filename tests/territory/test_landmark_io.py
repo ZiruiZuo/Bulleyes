@@ -110,3 +110,20 @@ def test_saved_landmarks_reject_a_different_image_shape(tmp_path):
 
     with pytest.raises(ValueError, match="image shape"):
         landmark_module.load_saved_landmarks(changed_study, path)
+
+
+def test_single_reference_metadata_is_saved(tmp_path):
+    path = tmp_path / "landmarks.json"
+    pair = LandmarkPair(aip=(2.0, 3.0), iip=(4.0, 5.0))
+
+    save_landmarks_json(
+        path,
+        [pair, pair, pair],
+        annotation_mode="single-reference",
+        reference_slice_index=1,
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["annotation_mode"] == "single-reference"
+    assert payload["reference_slice_index"] == 1
+    assert payload["reference_slice_number"] == 2

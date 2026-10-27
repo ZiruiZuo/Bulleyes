@@ -57,7 +57,8 @@ class BullseyeResult:
 
     ``probabilities`` has shape ``(radial, angle, 3)`` in LAD, LCX, RCA
     order. ``angles`` are canonical angles before the 180-degree display
-    rotation. The apical cap (segment 17) is stored separately.
+    rotation. In a 1-4 projection the apical cap is summarized separately;
+    in a 0-4 projection samples below radius 1 belong to segment 17.
     """
 
     probabilities: NDArray[np.floating]

@@ -12,13 +12,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Colormap, LinearSegmentedColormap, Normalize, to_rgb
+from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
 from matplotlib.patches import Wedge
 
+from ..coronary.projection import ProjectedCoronaryPath
 from ..territory.aha17 import (
     FOUR_SECTOR_CENTERS_DEG,
     SIX_SECTOR_CENTERS_DEG,
     draw_aha17_boundaries,
+)
+from ..territory.plotting import (
+    CORONARY_AUTO_COLORS,
+    CORONARY_DEFAULT_LABEL_COLORS,
 )
 from .mapping import LgeBullseyeResult
 from .scar import Aha16ScarSummary
@@ -92,6 +98,12 @@ def plot_lge_bullseye(
     title: str = "Continuous LGE intensity bullseye",
     colormap: str = "gray",
     show_numbers: bool = True,
+    colorbar_label: str = "LGE intensity (native units)",
+    coronary_paths: list[ProjectedCoronaryPath] | None = None,
+    coronary_label_colors: dict[int, str] | None = None,
+    coronary_label_names: dict[int, str] | None = None,
+    coronary_default_color: str | None = None,
+    coronary_linewidth: float = 1.8,
     show: bool = True,
 ):
     """Render LGE intensity; percentiles affect display only, not saved data."""
@@ -109,7 +121,11 @@ def plot_lge_bullseye(
 
     figure, axis = plt.subplots(figsize=(8, 8))
     radial_edges = _centers_to_edges(np.asarray(result.radial_positions))
-    radial_edges[0], radial_edges[-1] = 1.0, 4.0
+    continuous_apex = bool(result.radial_positions[0] < 1.0)
+    radial_edges[0], radial_edges[-1] = (
+        0.0 if continuous_apex else 1.0,
+        4.0,
+    )
     angle_step = 2.0 * np.pi / len(result.angles)
     plot_angle_edges = np.arange(len(result.angles) + 1) * angle_step + np.pi
     angle_grid, radius_grid = np.meshgrid(plot_angle_edges, radial_edges)
@@ -124,20 +140,87 @@ def plot_lge_bullseye(
         antialiased=False,
         rasterized=True,
     )
-    if result.include_apex and np.isfinite(result.apex_intensity):
+    if (
+        result.include_apex
+        and not continuous_apex
+        and np.isfinite(result.apex_intensity)
+    ):
         fraction = np.clip((result.apex_intensity - vmin) / (vmax - vmin), 0.0, 1.0)
         apex_color = plt.get_cmap(colormap)(fraction)
-    elif result.include_apex:
+    elif result.include_apex and not continuous_apex:
         apex_color = "#d0d0d0"
-    if result.include_apex:
+    if result.include_apex and not continuous_apex:
         axis.add_patch(
             Circle((0.0, 0.0), 1.0, facecolor=apex_color, edgecolor="none")
         )
     draw_aha17_boundaries(
         axis, show_numbers=show_numbers, include_apex=result.include_apex
     )
+
+    coronary_paths = coronary_paths or []
+    coronary_label_colors = coronary_label_colors or {}
+    coronary_label_names = coronary_label_names or {}
+    coronary_labels = sorted({path.label for path in coronary_paths})
+    resolved_coronary_colors = {
+        label: coronary_label_colors.get(
+            label,
+            coronary_default_color
+            if coronary_default_color is not None
+            else CORONARY_DEFAULT_LABEL_COLORS.get(
+                label,
+                CORONARY_AUTO_COLORS[index % len(CORONARY_AUTO_COLORS)],
+            ),
+        )
+        for index, label in enumerate(coronary_labels)
+    }
+    for path in coronary_paths:
+        axis.plot(
+            path.xy[:, 0],
+            path.xy[:, 1],
+            color=resolved_coronary_colors[path.label],
+            linewidth=coronary_linewidth,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            zorder=20,
+        )
+
+    finite_radii = [
+        np.linalg.norm(path.xy[np.isfinite(path.xy).all(axis=1)], axis=1)
+        for path in coronary_paths
+        if np.isfinite(path.xy).all(axis=1).any()
+    ]
+    maximum_coronary_radius = max(
+        (float(values.max()) for values in finite_radii if values.size),
+        default=0.0,
+    )
+    view_limit = max(4.45, maximum_coronary_radius * 1.05 + 0.10)
+    axis.set_xlim(-view_limit, view_limit)
+    axis.set_ylim(-view_limit, view_limit)
+
+    if coronary_labels:
+        legend_handles = []
+        for label in coronary_labels:
+            name = coronary_label_names.get(
+                label,
+                "Coronary" if len(coronary_labels) == 1 else f"Coronary {label}",
+            )
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color=resolved_coronary_colors[label],
+                    linewidth=coronary_linewidth,
+                    label=name,
+                )
+            )
+        axis.legend(
+            handles=legend_handles,
+            loc="upper left",
+            frameon=False,
+        )
+
     colorbar = figure.colorbar(mesh, ax=axis, fraction=0.046, pad=0.04)
-    colorbar.set_label("LGE intensity (native units)")
+    colorbar.set_label(colorbar_label)
     axis.set_title(title, pad=16)
 
     if output_path is not None:

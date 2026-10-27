@@ -58,7 +58,8 @@ def plot_territory_bullseye(
 
     figure, axis = plt.subplots(figsize=(8, 8))
     radial_edges = _centers_to_edges(np.asarray(result.radial_positions))
-    radial_edges[0] = 1.0
+    continuous_apex = bool(result.radial_positions[0] < 1.0)
+    radial_edges[0] = 0.0 if continuous_apex else 1.0
     radial_edges[-1] = 4.0
 
     angle_step = 2.0 * np.pi / result.angles.size
@@ -81,8 +82,11 @@ def plot_territory_bullseye(
         rasterized=True,
     )
 
-    center_color = TERRITORY_COLORS[result.apex_territory]
-    axis.add_patch(Circle((0.0, 0.0), 1.0, facecolor=center_color, edgecolor="none"))
+    if not continuous_apex:
+        center_color = TERRITORY_COLORS[result.apex_territory]
+        axis.add_patch(
+            Circle((0.0, 0.0), 1.0, facecolor=center_color, edgecolor="none")
+        )
 
     # Patient-specific territory borders. Drawing one binary contour per label
     # avoids treating category numbers as continuous measurements.

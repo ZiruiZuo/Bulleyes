@@ -1,3 +1,5 @@
+import json
+
 import matplotlib
 import numpy as np
 import pytest
@@ -356,3 +358,123 @@ def test_transposed_landmark_view_matches_nifti_axes_and_maps_clicks_back(
     assert selected[0] is not None
     assert selected[0].aip == pytest.approx((4.25, 0.75))
     assert selected[0].iip == pytest.approx((1.25, 2.5))
+
+
+def test_single_reference_gui_selects_once_and_propagates_to_all_slices(
+    monkeypatch, tmp_path
+):
+    from cardiac_bullseye.territory import landmarks as module
+
+    callbacks = {}
+
+    class FakeButton:
+        def __init__(self, _axis, label):
+            self.label = label
+
+        def on_clicked(self, callback):
+            callbacks[self.label] = callback
+
+    def select_reference(canvas, timeout=0):
+        axis = canvas.figure.axes[0]
+        assert "Slice 2/3" in axis.get_title()
+
+        def dispatch(point):
+            display_x, display_y = axis.transData.transform(point)
+            event = MouseEvent(
+                "button_press_event",
+                canvas,
+                display_x,
+                display_y,
+                button=MouseButton.LEFT,
+            )
+            canvas.callbacks.process("button_press_event", event)
+
+        dispatch((7.0, 4.0))
+        dispatch((4.0, 8.0))
+        callbacks["Accept Reference"](None)
+
+    monkeypatch.setattr(module, "Button", FakeButton)
+    monkeypatch.setattr(module, "_ensure_interactive_backend", lambda: None)
+    monkeypatch.setattr(module.plt, "show", lambda **_kwargs: None)
+    monkeypatch.setattr(FigureCanvasBase, "start_event_loop", select_reference)
+    study = StudyData(
+        mr=np.ones((3, 9, 9), dtype=float),
+        territory_mask=_closed_ring_stack(3, (9, 9)),
+        slice_positions=np.asarray([0.0, 1.0, 2.0]),
+    )
+
+    selected = module.select_single_reference_interactively(
+        study,
+        tmp_path / "landmarks.json",
+        resume_existing=False,
+    )
+
+    assert all(pair is not None for pair in selected)
+    assert selected[1].aip == pytest.approx((7.0, 4.0))
+    assert selected[1].iip == pytest.approx((4.0, 8.0))
+    for pair in selected:
+        assert pair.aip == pytest.approx((7.0, 4.0))
+        assert pair.iip == pytest.approx((4.0, 8.0))
+
+    payload = json.loads(
+        (tmp_path / "landmarks.json").read_text(encoding="utf-8")
+    )
+    assert payload["annotation_mode"] == "single-reference"
+    assert payload["reference_slice_index"] == 1
+
+
+def test_single_reference_gui_can_delete_a_slice_before_accepting(
+    monkeypatch, tmp_path
+):
+    from cardiac_bullseye.territory import landmarks as module
+
+    callbacks = {}
+
+    class FakeButton:
+        def __init__(self, _axis, label):
+            self.label = label
+
+        def on_clicked(self, callback):
+            callbacks[self.label] = callback
+
+    def delete_then_select(canvas, timeout=0):
+        axis = canvas.figure.axes[0]
+        callbacks["Previous"](None)
+        assert "Slice 1/3" in axis.get_title()
+        callbacks["Delete"](None)
+        callbacks["Next"](None)
+
+        def dispatch(point):
+            display_x, display_y = axis.transData.transform(point)
+            event = MouseEvent(
+                "button_press_event",
+                canvas,
+                display_x,
+                display_y,
+                button=MouseButton.LEFT,
+            )
+            canvas.callbacks.process("button_press_event", event)
+
+        dispatch((7.0, 4.0))
+        dispatch((4.0, 8.0))
+        callbacks["Accept Reference"](None)
+
+    monkeypatch.setattr(module, "Button", FakeButton)
+    monkeypatch.setattr(module, "_ensure_interactive_backend", lambda: None)
+    monkeypatch.setattr(module.plt, "show", lambda **_kwargs: None)
+    monkeypatch.setattr(FigureCanvasBase, "start_event_loop", delete_then_select)
+    study = StudyData(
+        mr=np.ones((3, 9, 9), dtype=float),
+        territory_mask=_closed_ring_stack(3, (9, 9)),
+        slice_positions=np.asarray([0.0, 1.0, 2.0]),
+    )
+    output = tmp_path / "landmarks.json"
+
+    selected = module.select_single_reference_interactively(
+        study, output, resume_existing=False
+    )
+
+    assert selected[0] is None
+    assert selected[1] is not None
+    assert selected[2] is not None
+    assert load_deleted_slice_indices(output, 3) == {0}

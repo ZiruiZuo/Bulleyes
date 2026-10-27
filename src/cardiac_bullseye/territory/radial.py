@@ -11,11 +11,22 @@ from numpy.typing import ArrayLike, NDArray
 from .mapping import last_retained_slice_index
 
 
+def projection_minimum_radius(projection: str) -> float:
+    """Translate a public projection name into its apical plot radius."""
+
+    if projection == "1-4":
+        return 1.0
+    if projection == "0-4":
+        return 0.0
+    raise ValueError("projection must be '1-4' or '0-4'")
+
+
 @dataclass(frozen=True)
 class MaskAnchoredRadialFrame:
-    """Map one retained myocardium-mask extent onto bullseye radii 1..4."""
+    """Map one retained myocardium-mask extent onto a bullseye radius range."""
 
     source_radii: NDArray[np.float64]
+    minimum_radius: float
     apical_index: int
     basal_index: int
     apical_position: float
@@ -25,7 +36,9 @@ class MaskAnchoredRadialFrame:
         """Map physical long-axis positions into this frame's plot radii."""
 
         values = np.asarray(positions, dtype=float)
-        return 1.0 + 3.0 * (values - self.apical_position) / (
+        return self.minimum_radius + (4.0 - self.minimum_radius) * (
+            values - self.apical_position
+        ) / (
             self.basal_position - self.apical_position
         )
 
@@ -34,8 +47,10 @@ def build_mask_anchored_radial_frame(
     mask: ArrayLike,
     slice_positions: ArrayLike,
     deleted_slice_indices: Iterable[int] = (),
+    *,
+    minimum_radius: float = 1.0,
 ) -> MaskAnchoredRadialFrame:
-    """Anchor radius 1 at first mask and radius 4 at retained basal mask."""
+    """Anchor the first mask at ``minimum_radius`` and retained base at 4."""
 
     mask_array = np.asarray(mask)
     positions = np.asarray(slice_positions, dtype=float)
@@ -47,6 +62,8 @@ def build_mask_anchored_radial_frame(
         positions.size > 1 and not np.all(np.diff(positions) > 0)
     ):
         raise ValueError("slice_positions must be finite and increase apex-to-base")
+    if not np.isfinite(minimum_radius) or not 0.0 <= minimum_radius < 4.0:
+        raise ValueError("minimum_radius must be finite and in the range [0, 4)")
 
     in_plane_axes = tuple(range(1, mask_array.ndim))
     occupied = np.flatnonzero(np.any(mask_array != 0, axis=in_plane_axes))
@@ -63,11 +80,12 @@ def build_mask_anchored_radial_frame(
 
     apical_position = float(positions[apical_index])
     basal_position = float(positions[basal_index])
-    source_radii = 1.0 + 3.0 * (positions - apical_position) / (
-        basal_position - apical_position
-    )
+    source_radii = minimum_radius + (4.0 - minimum_radius) * (
+        positions - apical_position
+    ) / (basal_position - apical_position)
     return MaskAnchoredRadialFrame(
         source_radii=source_radii,
+        minimum_radius=float(minimum_radius),
         apical_index=apical_index,
         basal_index=basal_index,
         apical_position=apical_position,
