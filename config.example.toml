@@ -31,8 +31,10 @@ fov_mm = [192.0, 192.0]
 short_axis_mr = 'outputs/patient_043_short_axis.nii.gz'
 short_axis_mask = 'outputs/patient_043_short_axis_mask.nii.gz'
 geometry_json = 'outputs/patient_043_geometry.json'
-# false：每次重新标 AIP/IIP；true：读取两种 bullseye 命令共享的
-# <case>_landmarks.json。对于 cardiac-intensity-bullseye，文件不存在时会自动打开窗口。
+# 可选：相对 TOML 所在目录解析，允许不同输出目录共用同网格 JSON。
+# landmarks_path = 'shared/patient_043_landmarks.json'
+# false：重新标注并覆盖；true：优先复用，缺失时打开窗口。
+# 省略 landmarks_path 时使用输出目录中的 <case>_landmarks.json。
 reuse_saved_points = false
 
 # false（默认）：强度牛眼图不读取 geometry_json 或 coronary_mask；
@@ -77,7 +79,10 @@ show_final_figure = true
 # 已按 Apex → Base 排列的短轴 LGE，以及直接在该网格上标注的心肌 mask。
 lge = 'inputs/patient_043_lge_sax.nii.gz'
 mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
-# true 时读取 <case>_lge_landmarks.json；正常心肌 ROI 仍需重新选择。
+# 可选共享路径；省略时用输出目录中的 <case>_lge_landmarks.json。
+# landmarks_path = 'shared/patient_043_landmarks.json'
+# true 时优先读取 landmark，缺失时打开窗口；false 时重新标注并覆盖。
+# 正常心肌 ROI 每次重画，不复用旧 ROI JSON。
 reuse_saved_points = false
 # 以下参数均可省略并使用这里展示的默认值。
 angle_count = 360
@@ -85,7 +90,8 @@ radial_count = 300
 angular_smoothing_sigma_deg = 1.5
 radial_smoothing_sigma = 1.5
 six_segment_warp = true
-# 缺血性心肌梗死 scar 阈值；每个未删除层需手绘正常心肌 ROI。
+# 每层阈值 = mean + k * sample SD (ddof=1)，仅严格大于阈值计为 scar。
+# 每个未删除层需手绘正常心肌 ROI。
 scar_sd_multiplier = 5.0
 normal_roi_min_voxels = 20
 
@@ -94,10 +100,22 @@ normal_roi_min_voxels = 20
 lge = 'inputs/patient_043_lge_sax.nii.gz'
 mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
 lge_scar_mask = 'inputs/patient_043_lge_scar_mask.nii.gz'
-# true 时读取 <case>_lge_landmarks.json 并跳过 AIP/IIP 窗口。
+# 可选共享路径；省略时用输出目录中的 <case>_lge_landmarks.json。
+# landmarks_path = 'shared/patient_043_landmarks.json'
+# true 时优先复用，缺失时打开窗口；false 时重新标注并覆盖。
 reuse_saved_points = false
 angle_count = 360
 radial_count = 300
 angular_smoothing_sigma_deg = 1.5
 radial_smoothing_sigma = 1.5
 six_segment_warp = true
+
+# 两个 LGE 命令都支持 --mode per-slice|single-reference（默认 per-slice）
+# 和 --projection 1-4|0-4（默认 1-4），配置文件中不需要增加这两项。
+# 0-4：第17节段 [0,1)，13–16 [1,2)，7–12 [2,3)，1–6 [3,4]。
+# 第17节段百分比汇总原生 scar/心肌体素数；强度在 r<1 内做 smoothstep 中心融合。
+# 1-4：只测量16节段；完整 LGE scar 中心 N/A，外部 scar 中心空白。
+# 共享 JSON 必须对应同一短轴网格和裁剪后的 Apex → Base 层索引。
+# 新文件含 coordinate_version=1；旧共同 *_landmarks.json 可读取，旧 LGE 转置坐标
+# 只在未指定 landmarks_path 的默认 *_lge_landmarks.json 上于内存迁移。
+# 显式路径不启用旧 LGE 推断；未知版本或来源不明的无版本文件会被拒绝。

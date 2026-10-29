@@ -143,6 +143,51 @@ def test_lge_cli_rejects_invalid_modes_before_loading(monkeypatch, options):
     assert error.value.code == 2
 
 
+@pytest.mark.parametrize("options, expected", [
+    ([], {}),
+    (["--mode", "single-reference"], {"landmark_mode": "single-reference"}),
+    (["--projection", "0-4"], {"projection": "0-4"}),
+    (["--mode", "per-slice", "--projection", "1-4"],
+     {"landmark_mode": "per-slice", "projection": "1-4"}),
+    (["--mode", "per-slice", "--projection", "0-4"],
+     {"landmark_mode": "per-slice", "projection": "0-4"}),
+    (["--mode", "single-reference", "--projection", "1-4"],
+     {"landmark_mode": "single-reference", "projection": "1-4"}),
+    (["--mode", "single-reference", "--projection", "0-4"],
+     {"landmark_mode": "single-reference", "projection": "0-4"}),
+])
+def test_external_lge_cli_forwards_annotation_and_projection(
+    monkeypatch, tmp_path, options, expected
+):
+    """Dropping either option would select a different shared mapping frame."""
+    from cardiac_bullseye import cli
+
+    config_path = tmp_path / "case.toml"
+    sentinel = object()
+    calls = []
+
+    def load(path, workflow):
+        assert path == config_path
+        assert workflow == "lge-mask-bullseye"
+        return sentinel
+
+    monkeypatch.setattr(cli, "load_config", load)
+    monkeypatch.setattr(cli, "generate_lge_mask_bullseye",
+                        lambda config, **kwargs: calls.append((config, kwargs)))
+    assert cli.lge_mask_bullseye_main(["--config", str(config_path), *options]) == 0
+    assert calls == [(sentinel, expected)]
+
+
+@pytest.mark.parametrize("options", [["--mode", "other"], ["--projection", "2-4"]])
+def test_external_lge_cli_rejects_invalid_modes(monkeypatch, options):
+    from cardiac_bullseye import cli
+
+    monkeypatch.setattr(cli, "load_config", lambda *_: pytest.fail("must not load"))
+    with pytest.raises(SystemExit) as error:
+        cli.lge_mask_bullseye_main(["--config", "case.toml", *options])
+    assert error.value.code == 2
+
+
 @pytest.mark.parametrize(
     ("entry_name", "runner_name", "workflow_name"),
     [

@@ -167,9 +167,30 @@ def lge_bullseye_main(argv: Sequence[str] | None = None) -> int:
 def lge_mask_bullseye_main(argv: Sequence[str] | None = None) -> int:
     """Render LGE bullseyes from an existing scar mask."""
 
-    return _run(
-        "lge-mask-bullseye",
-        "cardiac-lge-mask-bullseye",
-        generate_lge_mask_bullseye,
-        argv,
+    parser = argparse.ArgumentParser(prog="cardiac-lge-mask-bullseye")
+    parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument(
+        "--mode",
+        choices=("per-slice", "single-reference"),
+        default=None,
+        help="AIP/IIP annotation mode (default: per-slice)",
     )
+    parser.add_argument(
+        "--projection",
+        choices=("1-4", "0-4"),
+        default=None,
+        help="First myocardial mask slice at radius 1 or 0 (default: 1-4)",
+    )
+    args = parser.parse_args(argv)
+    options = {}
+    if args.mode is not None:
+        options["landmark_mode"] = args.mode
+    if args.projection is not None:
+        options["projection"] = args.projection
+    try:
+        config = load_config(args.config, "lge-mask-bullseye")
+        generate_lge_mask_bullseye(config, **options)
+    except (ConfigError, OSError, ValueError, RuntimeError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    return 0
