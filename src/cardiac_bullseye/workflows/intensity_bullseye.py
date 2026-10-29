@@ -14,16 +14,8 @@ from ..coronary import (
 )
 from ..intensity import load_intensity_study_nifti
 from ..lge import compute_lge_bullseye, plot_lge_bullseye
-from ..territory.io import load_center_overrides_json, load_deleted_slice_indices
-from ..territory.landmarks import (
-    load_saved_landmarks,
-    select_landmarks_interactively,
-    select_single_reference_interactively,
-)
-from ..territory.radial import (
-    build_mask_anchored_radial_frame,
-    projection_minimum_radius,
-)
+from ..territory.radial import projection_minimum_radius
+from .bullseye_frame import prepare_bullseye_frame
 
 
 @dataclass(frozen=True)
@@ -74,50 +66,25 @@ def generate_intensity_bullseye(
             )
         radial_slice_positions = cardiac_geometry.slice_positions_mm
 
-    landmark_path = config.case.output_path("landmarks.json")
-    can_reuse = config.bullseye.reuse_saved_points and landmark_path.is_file()
-    if can_reuse:
-        print("2/4 Loading shared AIP/IIP points...")
-        landmarks = load_saved_landmarks(study, landmark_path)
-    elif landmark_mode == "single-reference":
-        if config.bullseye.reuse_saved_points:
-            print("2/4 Shared landmark file is missing; select one reference slice...")
-        else:
-            print("2/4 Select AIP/IIP on one reference slice...")
-        landmarks = select_single_reference_interactively(
-            study,
-            landmark_path,
-            resume_existing=False,
-            transpose_for_display=True,
-        )
-    else:
-        if config.bullseye.reuse_saved_points:
-            print("2/4 Shared landmark file is missing; annotate each retained slice...")
-        else:
-            print("2/4 Select AIP followed by IIP on each retained slice...")
-        landmarks = select_landmarks_interactively(
-            study,
-            landmark_path,
-            resume_existing=False,
-            transpose_for_display=True,
-        )
-
-    deleted = load_deleted_slice_indices(landmark_path, study.slice_count)
-    center_overrides = load_center_overrides_json(
-        landmark_path,
-        study.slice_count,
-        expected_image_shape=study.mr.shape,
+    landmark_path = (
+        config.bullseye.landmarks_path or config.case.output_path("landmarks.json")
     )
-    if not any(pair is not None for pair in landmarks):
-        raise RuntimeError("No slice has a valid AIP/IIP pair")
+    print("2/4 Preparing shared AIP/IIP points and radial frame...")
+    frame = prepare_bullseye_frame(
+        study,
+        landmark_path,
+        reuse_saved_points=config.bullseye.reuse_saved_points,
+        landmark_mode=landmark_mode,
+        projection=projection,
+        slice_positions=radial_slice_positions,
+        transpose_for_display=True,
+    )
+    landmarks = frame.landmarks
+    deleted = frame.deleted_slice_indices
+    center_overrides = frame.center_overrides
+    radial_frame = frame.radial_frame
 
     print("3/4 Computing angular means and radial interpolation...")
-    radial_frame = build_mask_anchored_radial_frame(
-        study.territory_mask,
-        radial_slice_positions,
-        deleted,
-        minimum_radius=minimum_radius,
-    )
     result = compute_lge_bullseye(
         study,
         landmarks,

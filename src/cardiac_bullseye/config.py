@@ -83,6 +83,7 @@ class BullseyeConfig:
     apex_territory: int | None = None
     show_final_figure: bool = True
     reuse_saved_points: bool = False
+    landmarks_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class LgeBullseyeConfig:
     scar_sd_multiplier: float = 5.0
     normal_roi_min_voxels: int = 20
     reuse_saved_points: bool = False
+    landmarks_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,7 @@ class LgeMaskBullseyeConfig:
     radial_smoothing_sigma: float = 1.5
     six_segment_warp: bool = True
     reuse_saved_points: bool = False
+    landmarks_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -437,6 +440,7 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
             apex_territory=bullseye_data.get("apex_territory"),
             show_final_figure=bullseye_data.get("show_final_figure", True),
             reuse_saved_points=bullseye_data.get("reuse_saved_points", False),
+            landmarks_path=_path(bullseye_data.get("landmarks_path"), base_directory),
         ),
         lge_bullseye=LgeBullseyeConfig(
             lge=_path(lge_bullseye_data.get("lge"), base_directory),
@@ -459,6 +463,9 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
             reuse_saved_points=lge_bullseye_data.get(
                 "reuse_saved_points", False
             ),
+            landmarks_path=_path(
+                lge_bullseye_data.get("landmarks_path"), base_directory
+            ),
         ),
         lge_mask_bullseye=LgeMaskBullseyeConfig(
             lge=_path(lge_mask_bullseye_data.get("lge"), base_directory),
@@ -477,6 +484,9 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
             six_segment_warp=lge_mask_bullseye_data.get("six_segment_warp", True),
             reuse_saved_points=lge_mask_bullseye_data.get(
                 "reuse_saved_points", False
+            ),
+            landmarks_path=_path(
+                lge_mask_bullseye_data.get("landmarks_path"), base_directory
             ),
         ),
     )

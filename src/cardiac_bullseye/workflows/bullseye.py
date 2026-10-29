@@ -20,22 +20,11 @@ from ..distance import (
     resample_distance_to_short_axis,
     save_distance_nifti,
 )
-from ..territory.io import (
-    load_center_overrides_json,
-    load_deleted_slice_indices,
-    load_study_nifti,
-)
-from ..territory.landmarks import (
-    load_saved_landmarks,
-    select_landmarks_interactively,
-    select_single_reference_interactively,
-)
+from ..territory.io import load_study_nifti
 from ..territory.mapping import compute_bullseye
 from ..territory.plotting import save_bullseye_figure
-from ..territory.radial import (
-    build_mask_anchored_radial_frame,
-    projection_minimum_radius,
-)
+from ..territory.radial import projection_minimum_radius
+from .bullseye_frame import prepare_bullseye_frame
 from .short_axis import ShortAxisOutputs
 
 
@@ -124,32 +113,21 @@ def generate_bullseye(
         print("3/8 Select AIP/IIP on one reference slice...")
     else:
         print("3/8 Select AIP followed by IIP on each slice...")
-    landmark_path = config.case.output_path("landmarks.json")
-    if config.bullseye.reuse_saved_points:
-        landmarks = load_saved_landmarks(study, landmark_path)
-    elif landmark_mode == "single-reference":
-        landmarks = select_single_reference_interactively(
-            study,
-            landmark_path,
-            resume_existing=False,
-            transpose_for_display=True,
-        )
-    else:
-        landmarks = select_landmarks_interactively(
-            study,
-            landmark_path,
-            resume_existing=False,
-            transpose_for_display=True,
-        )
-    deleted_slice_indices = load_deleted_slice_indices(
-        landmark_path,
-        study.slice_count,
+    landmark_path = (
+        config.bullseye.landmarks_path or config.case.output_path("landmarks.json")
     )
-    center_overrides = load_center_overrides_json(
+    frame = prepare_bullseye_frame(
+        study,
         landmark_path,
-        study.slice_count,
-        expected_image_shape=study.mr.shape,
+        reuse_saved_points=config.bullseye.reuse_saved_points,
+        landmark_mode=landmark_mode,
+        projection=projection,
+        slice_positions=cardiac_geometry.slice_positions_mm,
+        transpose_for_display=True,
     )
+    landmarks = frame.landmarks
+    deleted_slice_indices = frame.deleted_slice_indices
+    center_overrides = frame.center_overrides
     completed = sum(pair is not None for pair in landmarks)
     print(f"    Valid landmarks: {completed}/{study.slice_count}")
     if deleted_slice_indices:
@@ -157,15 +135,7 @@ def generate_bullseye(
             str(index + 1) for index in sorted(deleted_slice_indices)
         )
         print(f"    Deleted slices: {deleted_numbers}")
-    if completed == 0:
-        raise RuntimeError("No slice has a valid AIP/IIP pair")
-
-    radial_frame = build_mask_anchored_radial_frame(
-        study.territory_mask,
-        cardiac_geometry.slice_positions_mm,
-        deleted_slice_indices,
-        minimum_radius=minimum_radius,
-    )
+    radial_frame = frame.radial_frame
     source_radii = radial_frame.source_radii
     center_blend_radius = None
     if minimum_radius == 0.0:

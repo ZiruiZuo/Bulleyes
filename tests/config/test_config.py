@@ -11,6 +11,30 @@ def write_config(tmp_path: Path, text: str) -> Path:
     return path
 
 
+@pytest.mark.parametrize("section", ["bullseye", "lge_bullseye", "lge_mask_bullseye"])
+@pytest.mark.parametrize("path_kind", ["absent", "relative", "absolute"])
+def test_shared_landmark_paths_resolve_from_config_directory(
+    tmp_path, section, path_kind
+):
+    source = tmp_path / "source.nii.gz"
+    source.touch()
+    value = (
+        tmp_path / "shared.json"
+        if path_kind == "absolute"
+        else Path("points/shared.json")
+    )
+    option = "" if path_kind == "absent" else f"landmarks_path = '{value.as_posix()}'"
+    config_path = write_config(
+        tmp_path,
+        f"[short_axis]\nsource_mr = '{source.as_posix()}'\n[{section}]\n{option}\n",
+    )
+
+    config = load_config(config_path, "short-axis")
+
+    expected = None if path_kind == "absent" else tmp_path / value
+    assert getattr(config, section).landmarks_path == expected
+
+
 def test_pipeline_config_parses_windows_paths_and_defaults(tmp_path):
     mr = tmp_path / "mr.nii.gz"
     mask = tmp_path / "mask.nii.gz"

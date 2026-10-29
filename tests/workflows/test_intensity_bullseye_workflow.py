@@ -7,6 +7,7 @@ import pytest
 
 from cardiac_bullseye.coronary import ProjectedCoronaryPath
 from cardiac_bullseye.territory.models import LandmarkPair, StudyData
+from cardiac_bullseye.workflows import bullseye_frame as frame_module
 
 
 def _study_and_landmarks():
@@ -24,8 +25,9 @@ def _study_and_landmarks():
     return study, [pair, pair, pair]
 
 
+@pytest.mark.parametrize("explicit_path", [False, True])
 def test_intensity_workflow_uses_shared_landmarks_and_mask_anchored_radii(
-    monkeypatch, app_config
+    monkeypatch, app_config, explicit_path
 ):
     from cardiac_bullseye.workflows import intensity_bullseye as module
 
@@ -43,6 +45,13 @@ def test_intensity_workflow_uses_shared_landmarks_and_mask_anchored_radii(
         ),
     )
     selected = {}
+    expected_landmarks = config.case.output_path("landmarks.json")
+    if explicit_path:
+        expected_landmarks = config.case.output_directory / "shared.json"
+        config = replace(
+            config,
+            bullseye=replace(config.bullseye, landmarks_path=expected_landmarks),
+        )
     plotted = {}
     monkeypatch.setattr(module, "load_intensity_study_nifti", lambda *_args: study)
 
@@ -50,10 +59,12 @@ def test_intensity_workflow_uses_shared_landmarks_and_mask_anchored_radii(
         selected.update(study=selected_study, path=output_path, kwargs=kwargs)
         return landmarks
 
-    monkeypatch.setattr(module, "select_single_reference_interactively", select_single)
-    monkeypatch.setattr(module, "load_deleted_slice_indices", lambda *_args: set())
     monkeypatch.setattr(
-        module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
+        frame_module, "select_single_reference_interactively", select_single
+    )
+    monkeypatch.setattr(frame_module, "load_deleted_slice_indices", lambda *_args: set())
+    monkeypatch.setattr(
+        frame_module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
     )
 
     def plot(result, path, **kwargs):
@@ -65,12 +76,15 @@ def test_intensity_workflow_uses_shared_landmarks_and_mask_anchored_radii(
         config, landmark_mode="single-reference"
     )
 
-    expected_landmarks = config.case.output_path("landmarks.json")
     expected_figure = config.case.output_path("intensity_bullseye.png")
     assert selected == {
         "study": study,
         "path": expected_landmarks,
-        "kwargs": {"resume_existing": False, "transpose_for_display": True},
+        "kwargs": {
+            "resume_existing": False,
+            "transpose_for_display": True,
+            "cancel_is_error": False,
+        },
     }
     assert outputs.landmarks == expected_landmarks
     assert outputs.figure == expected_figure
@@ -97,7 +111,7 @@ def test_intensity_workflow_opens_annotation_when_reuse_file_is_missing(
     calls = []
     monkeypatch.setattr(module, "load_intensity_study_nifti", lambda *_args: study)
     monkeypatch.setattr(
-        module,
+        frame_module,
         "load_saved_landmarks",
         lambda *_args: (_ for _ in ()).throw(
             AssertionError("missing file must not be loaded")
@@ -108,10 +122,10 @@ def test_intensity_workflow_opens_annotation_when_reuse_file_is_missing(
         calls.append("interactive")
         return landmarks
 
-    monkeypatch.setattr(module, "select_landmarks_interactively", select_each)
-    monkeypatch.setattr(module, "load_deleted_slice_indices", lambda *_args: set())
+    monkeypatch.setattr(frame_module, "select_landmarks_interactively", select_each)
+    monkeypatch.setattr(frame_module, "load_deleted_slice_indices", lambda *_args: set())
     monkeypatch.setattr(
-        module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
+        frame_module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
     )
     monkeypatch.setattr(module, "plot_lge_bullseye", lambda *_args, **_kwargs: None)
 
@@ -135,21 +149,21 @@ def test_intensity_workflow_reuses_existing_shared_landmark_file(
     calls = []
     monkeypatch.setattr(module, "load_intensity_study_nifti", lambda *_args: study)
 
-    def load_saved(selected_study, path):
+    def load_saved(selected_study, path, **_kwargs):
         calls.append((selected_study, path))
         return landmarks
 
-    monkeypatch.setattr(module, "load_saved_landmarks", load_saved)
+    monkeypatch.setattr(frame_module, "load_saved_landmarks", load_saved)
     monkeypatch.setattr(
-        module,
+        frame_module,
         "select_landmarks_interactively",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("annotation UI must not open")
         ),
     )
-    monkeypatch.setattr(module, "load_deleted_slice_indices", lambda *_args: set())
+    monkeypatch.setattr(frame_module, "load_deleted_slice_indices", lambda *_args: set())
     monkeypatch.setattr(
-        module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
+        frame_module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
     )
     monkeypatch.setattr(module, "plot_lge_bullseye", lambda *_args, **_kwargs: None)
 
@@ -181,11 +195,11 @@ def test_intensity_workflow_zero_to_four_projection_uses_real_center(
     plotted = {}
     monkeypatch.setattr(module, "load_intensity_study_nifti", lambda *_args: study)
     monkeypatch.setattr(
-        module, "select_landmarks_interactively", lambda *_args, **_kwargs: landmarks
+        frame_module, "select_landmarks_interactively", lambda *_args, **_kwargs: landmarks
     )
-    monkeypatch.setattr(module, "load_deleted_slice_indices", lambda *_args: set())
+    monkeypatch.setattr(frame_module, "load_deleted_slice_indices", lambda *_args: set())
     monkeypatch.setattr(
-        module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
+        frame_module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
     )
     monkeypatch.setattr(
         module,
@@ -233,11 +247,11 @@ def test_intensity_workflow_optionally_projects_coronaries_on_shared_frame(
     calls = {}
     monkeypatch.setattr(module, "load_intensity_study_nifti", lambda *_args: study)
     monkeypatch.setattr(
-        module, "select_landmarks_interactively", lambda *_args, **_kwargs: landmarks
+        frame_module, "select_landmarks_interactively", lambda *_args, **_kwargs: landmarks
     )
-    monkeypatch.setattr(module, "load_deleted_slice_indices", lambda *_args: set())
+    monkeypatch.setattr(frame_module, "load_deleted_slice_indices", lambda *_args: set())
     monkeypatch.setattr(
-        module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
+        frame_module, "load_center_overrides_json", lambda *_args, **_kwargs: [None] * 3
     )
     monkeypatch.setattr(
         module,

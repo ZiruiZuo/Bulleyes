@@ -4,6 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from cardiac_bullseye.territory.models import LandmarkPair, StudyData
+from cardiac_bullseye.workflows import bullseye_frame as frame_module
 
 
 def test_bullseye_workflow_requests_a_fresh_transposed_nifti_annotation_view(
@@ -29,14 +30,16 @@ def test_bullseye_workflow_requests_a_fresh_transposed_nifti_annotation_view(
         *,
         resume_existing,
         transpose_for_display,
+        cancel_is_error,
     ):
         assert selected_study is study
         assert resume_existing is False
         assert transpose_for_display is True
+        assert cancel_is_error is False
         return [None]
 
     monkeypatch.setattr(
-        module, "select_landmarks_interactively", select_transposed_view
+        frame_module, "select_landmarks_interactively", select_transposed_view
     )
 
     with pytest.raises(RuntimeError, match="No slice has a valid AIP/IIP pair"):
@@ -61,7 +64,7 @@ def test_bullseye_workflow_uses_single_reference_annotation_mode(
     )
     monkeypatch.setattr(module, "load_study_nifti", lambda *_args, **_kwargs: study)
     monkeypatch.setattr(
-        module,
+        frame_module,
         "select_landmarks_interactively",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("per-slice annotation UI must not open")
@@ -74,14 +77,16 @@ def test_bullseye_workflow_uses_single_reference_annotation_mode(
         *,
         resume_existing,
         transpose_for_display,
+        cancel_is_error,
     ):
+        assert cancel_is_error is False
         calls.append(
             (selected_study, resume_existing, transpose_for_display)
         )
         return [None]
 
     monkeypatch.setattr(
-        module,
+        frame_module,
         "select_single_reference_interactively",
         select_single_reference,
         raising=False,
@@ -114,14 +119,22 @@ def test_bullseye_workflow_reuses_landmarks_without_opening_annotation_ui(
     )
     monkeypatch.setattr(module, "load_study_nifti", lambda *_args, **_kwargs: study)
     monkeypatch.setattr(
-        module,
+        frame_module,
         "select_landmarks_interactively",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("annotation UI must not open")
         ),
     )
-    assert hasattr(module, "load_saved_landmarks")
-    monkeypatch.setattr(module, "load_saved_landmarks", lambda *_args: [None])
+    config.case.output_path("landmarks.json").touch()
+    monkeypatch.setattr(
+        frame_module, "load_saved_landmarks", lambda *_args, **_kwargs: [None]
+    )
+    monkeypatch.setattr(
+        frame_module, "load_deleted_slice_indices", lambda *_args: set()
+    )
+    monkeypatch.setattr(
+        frame_module, "load_center_overrides_json", lambda *_args, **_kwargs: [None]
+    )
 
     with pytest.raises(RuntimeError, match="No slice has a valid AIP/IIP pair"):
         module.generate_bullseye(config)
@@ -140,6 +153,7 @@ def test_bullseye_workflow_reuses_landmarks_without_opening_annotation_ui(
         ("0-4", [-2.0, 0.0, 4.0], 0.0, None, 4.0),
     ],
 )
+@pytest.mark.parametrize("explicit_path", [False, True])
 def test_bullseye_workflow_shares_mask_anchored_frame(
     monkeypatch,
     app_config,
@@ -148,6 +162,7 @@ def test_bullseye_workflow_shares_mask_anchored_frame(
     minimum_radius,
     expected_apex,
     expected_center_blend_radius,
+    explicit_path,
 ):
     from cardiac_bullseye.workflows import bullseye as module
 
@@ -174,6 +189,13 @@ def test_bullseye_workflow_shares_mask_anchored_frame(
         app_config,
         bullseye=replace(app_config.bullseye, apex_territory=3),
     )
+    expected_path = app_config.case.output_path("landmarks.json")
+    if explicit_path:
+        expected_path = app_config.case.output_directory / "shared.json"
+        app_config = replace(
+            app_config,
+            bullseye=replace(app_config.bullseye, landmarks_path=expected_path),
+        )
 
     monkeypatch.setattr(module, "validate_config", lambda *_args: None)
     monkeypatch.setattr(module, "load_cardiac_geometry", lambda _path: geometry)
@@ -181,16 +203,17 @@ def test_bullseye_workflow_shares_mask_anchored_frame(
         module, "validate_geometry_against_short_axis_nifti", lambda *_args: None
     )
     monkeypatch.setattr(module, "load_study_nifti", lambda *_args, **_kwargs: study)
+
+    def select_landmarks(_study, path, **_kwargs):
+        assert path == expected_path
+        return landmarks
+
+    monkeypatch.setattr(frame_module, "select_landmarks_interactively", select_landmarks)
     monkeypatch.setattr(
-        module,
-        "select_landmarks_interactively",
-        lambda *_args, **_kwargs: landmarks,
+        frame_module, "load_deleted_slice_indices", lambda *_args, **_kwargs: set()
     )
     monkeypatch.setattr(
-        module, "load_deleted_slice_indices", lambda *_args, **_kwargs: set()
-    )
-    monkeypatch.setattr(
-        module,
+        frame_module,
         "load_center_overrides_json",
         lambda *_args, **_kwargs: manual_centers,
     )
