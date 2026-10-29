@@ -98,6 +98,52 @@ def test_intensity_bullseye_cli_forwards_single_reference_mode(
 
 
 @pytest.mark.parametrize(
+    "options, expected",
+    [([], {}),
+     (["--mode", "per-slice"], {"landmark_mode": "per-slice"}),
+     (["--mode", "single-reference"], {"landmark_mode": "single-reference"}),
+     (["--projection", "1-4"], {"projection": "1-4"}),
+     (["--projection", "0-4"], {"projection": "0-4"})]
+    + [(["--mode", mode, "--projection", projection],
+        {"landmark_mode": mode, "projection": projection})
+       for mode in ("per-slice", "single-reference")
+       for projection in ("1-4", "0-4")],
+)
+def test_lge_cli_forwards_requested_annotation_and_projection(
+    monkeypatch, tmp_path, options, expected
+):
+    from cardiac_bullseye import cli
+
+    config_path = tmp_path / "case.toml"
+    sentinel = object()
+    calls = []
+
+    def load(path, workflow):
+        assert path == config_path
+        assert workflow == "lge-bullseye"
+        return sentinel
+
+    monkeypatch.setattr(cli, "load_config", load)
+    monkeypatch.setattr(
+        cli, "generate_lge_bullseye",
+        lambda config, **kwargs: calls.append((config, kwargs)),
+    )
+
+    assert cli.lge_bullseye_main(["--config", str(config_path), *options]) == 0
+    assert calls == [(sentinel, expected)]
+
+
+@pytest.mark.parametrize("options", [["--mode", "other"], ["--projection", "2-4"]])
+def test_lge_cli_rejects_invalid_modes_before_loading(monkeypatch, options):
+    from cardiac_bullseye import cli
+
+    monkeypatch.setattr(cli, "load_config", lambda *_: pytest.fail("must not load"))
+    with pytest.raises(SystemExit) as error:
+        cli.lge_bullseye_main(["--config", "case.toml", *options])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
     ("entry_name", "runner_name", "workflow_name"),
     [
         ("bullseye_main", "generate_bullseye", "bullseye"),

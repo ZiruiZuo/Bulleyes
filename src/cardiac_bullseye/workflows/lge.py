@@ -1,4 +1,4 @@
-"""Interactive workflow for native LGE intensity and AHA-16 scar burden."""
+"""Interactive workflow for native LGE intensity and AHA scar burden."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from ..lge import (
     save_reference_roi_masks,
     select_reference_rois_interactively,
 )
-from ..territory.io import load_center_overrides_json, load_deleted_slice_indices
-from ..territory.landmarks import load_saved_landmarks, select_landmarks_interactively
+from ..territory.radial import projection_minimum_radius
+from .bullseye_frame import prepare_bullseye_frame
 from .lge_common import compute_lge_bullseye_products, save_lge_bullseye_figures
 
 
@@ -35,9 +35,15 @@ class LgeBullseyeOutputs:
 
 def generate_lge_bullseye(
     config: AppConfig,
+    *,
+    landmark_mode: str = "per-slice",
+    projection: str = "1-4",
 ) -> LgeBullseyeOutputs:
     """Generate configured intensity and infarct-scar bullseyes from SAX LGE."""
 
+    if landmark_mode not in {"per-slice", "single-reference"}:
+        raise ValueError("landmark_mode must be 'per-slice' or 'single-reference'")
+    minimum_radius = projection_minimum_radius(projection)
     validate_config(config, "lge-bullseye")
     lge_path = config.lge_bullseye.lge
     mask_path = config.lge_bullseye.mask
@@ -45,7 +51,10 @@ def generate_lge_bullseye(
         raise ValueError("LGE bullseye generation requires LGE and mask inputs")
     output_directory = config.case.output_directory
     output_directory.mkdir(parents=True, exist_ok=True)
-    landmarks_path = config.case.output_path("lge_landmarks.json")
+    landmarks_path = (
+        config.lge_bullseye.landmarks_path
+        or config.case.output_path("lge_landmarks.json")
+    )
     numeric_path = config.case.output_path("lge_intensity_bullseye.npz")
     figure_path = config.case.output_path("lge_intensity_bullseye.png")
     reference_rois_path = config.case.output_path("lge_normal_rois.json")
@@ -60,25 +69,20 @@ def generate_lge_bullseye(
         f"shape {study.mr.shape[1:]}"
     )
 
-    print(
-        "2/7 Load saved AIP/IIP points..."
-        if config.lge_bullseye.reuse_saved_points
-        else "2/7 Select AIP followed by IIP on each retained slice..."
-    )
-    if config.lge_bullseye.reuse_saved_points:
-        landmarks = load_saved_landmarks(study, landmarks_path)
-    else:
-        landmarks = select_landmarks_interactively(
-            study, landmarks_path, resume_existing=False
-        )
-    deleted = load_deleted_slice_indices(landmarks_path, study.slice_count)
-    center_overrides = load_center_overrides_json(
+    print("2/7 Preparing shared AIP/IIP points and radial frame...")
+    frame = prepare_bullseye_frame(
+        study,
         landmarks_path,
-        study.slice_count,
-        expected_image_shape=study.mr.shape,
+        reuse_saved_points=config.lge_bullseye.reuse_saved_points,
+        landmark_mode=landmark_mode,
+        projection=projection,
+        slice_positions=study.slice_positions,
+        transpose_for_display=True,
+        legacy_lge_default=config.lge_bullseye.landmarks_path is None,
     )
-    if not any(pair is not None for pair in landmarks):
-        raise RuntimeError("No slice has a valid AIP/IIP pair")
+    landmarks = frame.landmarks
+    deleted = frame.deleted_slice_indices
+    center_overrides = frame.center_overrides
 
     print("3/7 Draw a normal-myocardium ROI on every retained slice...")
     reference_roi_slices = select_reference_rois_interactively(
@@ -118,7 +122,8 @@ def generate_lge_bullseye(
         scar_mask_path, lge_path, mask_path, scar_result.scar_mask
     )
 
-    print("5/7 Mapping native LGE intensity and AHA-16 scar burden...")
+    segment_count = 17 if minimum_radius == 0.0 else 16
+    print(f"5/7 Mapping native LGE intensity and AHA-{segment_count} scar burden...")
     products = compute_lge_bullseye_products(
         study,
         landmarks,
@@ -130,11 +135,13 @@ def generate_lge_bullseye(
         six_segment_warp=config.lge_bullseye.six_segment_warp,
         deleted_slice_indices=deleted,
         center_overrides=center_overrides,
+        source_radii=frame.radial_frame.source_radii,
+        minimum_radius=minimum_radius,
     )
     saved_numeric = save_lge_bullseye_npz(numeric_path, products.intensity)
     saved_scar_segments = save_aha16_scar_csv(scar_segments_path, products.scar)
 
-    print("6/7 Saving the native-intensity and AHA-16 scar-burden figures...")
+    print(f"6/7 Saving the native-intensity and AHA-{segment_count} scar-burden figures...")
     save_lge_bullseye_figures(products, figure_path, scar_figure_path)
     print("7/7 Finalizing LGE bullseye outputs...")
     print(f"    Landmarks: {landmarks_path}")
