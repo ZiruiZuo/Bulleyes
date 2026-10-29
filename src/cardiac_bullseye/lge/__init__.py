@@ -5,6 +5,7 @@ from .io import (
     load_lge_study,
     load_lge_study_with_scar,
     save_aha16_scar_csv,
+    save_aha_scar_csv,
     save_lge_bullseye_npz,
     save_lge_scar_mask,
 )
@@ -28,15 +29,19 @@ from .reference_roi import (
 )
 from .scar import (
     Aha16ScarSummary,
+    AhaScarSummary,
     LgeScarResult,
     compute_aha16_scar_percentages,
     compute_aha16_segment_ids,
+    compute_aha_scar_percentages,
+    compute_aha_segment_ids,
     compute_lge_scar,
     compute_reference_statistics,
 )
 
 __all__ = [
     "Aha16ScarSummary",
+    "AhaScarSummary",
     "LgeBullseyeResult",
     "LgeScarResult",
     "LgeStudyWithScar",
@@ -45,6 +50,8 @@ __all__ = [
     "apply_brush_stroke",
     "compute_aha16_scar_percentages",
     "compute_aha16_segment_ids",
+    "compute_aha_scar_percentages",
+    "compute_aha_segment_ids",
     "compute_lge_bullseye",
     "compute_lge_scar",
     "compute_reference_statistics",
@@ -58,6 +65,7 @@ __all__ = [
     "rasterize_reference_roi_polygons",
     "save_lge_bullseye_npz",
     "save_aha16_scar_csv",
+    "save_aha_scar_csv",
     "save_lge_scar_mask",
     "save_reference_roi_polygons",
     "save_reference_roi_masks",

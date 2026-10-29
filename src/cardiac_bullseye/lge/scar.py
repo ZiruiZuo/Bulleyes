@@ -30,12 +30,16 @@ class LgeScarResult:
 
 
 @dataclass(frozen=True)
-class Aha16ScarSummary:
-    """Native-voxel scar burden for AHA segments 1 through 16."""
+class AhaScarSummary:
+    """Native-voxel scar burden for AHA segments 1 through 16 or 17."""
 
     scar_percentages: NDArray[np.float64]
     scar_voxel_counts: NDArray[np.int64]
     myocardial_voxel_counts: NDArray[np.int64]
+
+
+# Existing callers may continue constructing and checking the original type.
+Aha16ScarSummary = AhaScarSummary
 
 
 def _interpolate_missing_landmarks(
@@ -103,6 +107,48 @@ def compute_reference_statistics(
     return count, mean, std, mean + float(sd_multiplier) * std
 
 
+def compute_aha_segment_ids(
+    study: StudyData,
+    landmarks: list[LandmarkPair | None],
+    source_radii: ArrayLike,
+    *,
+    include_segment_17: bool,
+    six_segment_warp: bool = True,
+    deleted_slice_indices: Iterable[int] = (),
+    center_overrides: Iterable[tuple[float, float] | None] | None = None,
+) -> NDArray[np.uint8]:
+    """Assign native myocardial voxels using supplied projection radii.
+
+    Radii must be finite and strictly increase apex-to-base, with one value
+    per source slice. Retained slices containing myocardium must lie in
+    [0, 4]; empty padding and deleted basal slices may lie outside that range.
+    Radii below 1 measure segment 17 and require ``include_segment_17=True``.
+    """
+
+    retained_basal = last_retained_slice_index(
+        study.slice_count, deleted_slice_indices
+    )
+    radii = np.asarray(source_radii, dtype=float)
+    if radii.shape != (study.slice_count,):
+        raise ValueError("source_radii must have one value per slice")
+    if not np.isfinite(radii).all() or not np.all(np.diff(radii) > 0.0):
+        raise ValueError("source_radii must be finite and strictly increasing")
+    occupied = np.any(study.territory_mask[: retained_basal + 1] > 0, axis=(1, 2))
+    applicable_radii = radii[: retained_basal + 1][occupied]
+    if np.any((applicable_radii < 0.0) | (applicable_radii > 4.0)):
+        raise ValueError("source_radii for retained myocardium must lie in [0, 4]")
+    if not include_segment_17 and np.any(applicable_radii < 1.0):
+        raise ValueError("source_radii assign segment 17 but include_segment_17 is False")
+    return _assign_native_segment_ids(
+        study,
+        landmarks,
+        radii,
+        retained_basal=retained_basal,
+        six_segment_warp=six_segment_warp,
+        center_overrides=center_overrides,
+    )
+
+
 def compute_aha16_segment_ids(
     study: StudyData,
     landmarks: list[LandmarkPair | None],
@@ -111,18 +157,54 @@ def compute_aha16_segment_ids(
     deleted_slice_indices: Iterable[int] = (),
     center_overrides: Iterable[tuple[float, float] | None] | None = None,
 ) -> NDArray[np.uint8]:
-    """Assign native myocardial voxels to AHA segments 1 through 16."""
+    """Compatibility API using the original longitudinal-thirds AHA-16 frame.
 
-    if len(landmarks) != study.slice_count:
-        raise ValueError("There must be one landmark entry per slice")
+    Use :func:`compute_aha_segment_ids` to consume shared projection radii.
+    """
+
     retained_basal = last_retained_slice_index(
         study.slice_count, deleted_slice_indices
     )
+    first_position = float(study.slice_positions[0])
+    last_position = float(study.slice_positions[retained_basal])
+    radii = np.zeros(study.slice_count, dtype=float)
+    for slice_index in range(retained_basal + 1):
+        if retained_basal == 0 or np.isclose(last_position, first_position):
+            longitudinal_fraction = 0.0
+        else:
+            longitudinal_fraction = (
+                float(study.slice_positions[slice_index]) - first_position
+            ) / (last_position - first_position)
+        if longitudinal_fraction < 1.0 / 3.0:
+            radii[slice_index] = 1.5
+        elif longitudinal_fraction < 2.0 / 3.0:
+            radii[slice_index] = 2.5
+        else:
+            radii[slice_index] = 3.5
+    return _assign_native_segment_ids(
+        study,
+        landmarks,
+        radii,
+        retained_basal=retained_basal,
+        six_segment_warp=six_segment_warp,
+        center_overrides=center_overrides,
+    )
+
+
+def _assign_native_segment_ids(
+    study: StudyData,
+    landmarks: list[LandmarkPair | None],
+    source_radii: NDArray[np.float64],
+    *,
+    retained_basal: int,
+    six_segment_warp: bool,
+    center_overrides: Iterable[tuple[float, float] | None] | None,
+) -> NDArray[np.uint8]:
+    if len(landmarks) != study.slice_count:
+        raise ValueError("There must be one landmark entry per slice")
     mapped_landmarks = _interpolate_missing_landmarks(
         landmarks, retained_basal + 1
     )
-    first_position = float(study.slice_positions[0])
-    last_position = float(study.slice_positions[retained_basal])
     segment_ids = np.zeros(study.mr.shape, dtype=np.uint8)
     if center_overrides is None:
         retained_center_overrides = None
@@ -141,19 +223,6 @@ def compute_aha16_segment_ids(
         myocardium = study.territory_mask[slice_index] > 0
         if not myocardium.any():
             continue
-        if retained_basal == 0 or np.isclose(last_position, first_position):
-            longitudinal_fraction = 0.0
-        else:
-            longitudinal_fraction = (
-                float(study.slice_positions[slice_index]) - first_position
-            ) / (last_position - first_position)
-        if longitudinal_fraction < 1.0 / 3.0:
-            representative_radius = 1.5
-        elif longitudinal_fraction < 2.0 / 3.0:
-            representative_radius = 2.5
-        else:
-            representative_radius = 3.5
-
         center = tuple(centers[slice_index])
         y, x = np.nonzero(myocardium)
         angles = aligned_angles(x, y, center, pair.aip, pair.iip)
@@ -162,30 +231,40 @@ def compute_aha16_segment_ids(
                 angles, center, pair.aip, pair.iip
             )
         voxel_segments = aha17_segment_id_map(
-            [representative_radius], angles
+            [source_radii[slice_index]], angles
         )[0]
         segment_ids[slice_index, y, x] = voxel_segments
     return segment_ids
 
 
-def compute_aha16_scar_percentages(
+def compute_aha_scar_percentages(
     scar_mask: ArrayLike,
     segment_ids: ArrayLike,
-) -> Aha16ScarSummary:
-    """Count scar and myocardium voxels in each AHA segment 1 through 16."""
+    *,
+    segment_count: int = 17,
+) -> AhaScarSummary:
+    """Pool native scar and myocardial counts for exactly 16 or 17 segments."""
 
+    if (
+        isinstance(segment_count, bool)
+        or not isinstance(segment_count, int)
+        or segment_count not in (16, 17)
+    ):
+        raise ValueError("segment_count must be 16 or 17")
     scar = np.asarray(scar_mask, dtype=bool)
     segments = np.asarray(segment_ids)
     if scar.shape != segments.shape:
         raise ValueError("scar_mask and segment_ids must have the same shape")
     present = set(np.unique(segments).tolist())
-    if not present.issubset(set(range(17))):
-        raise ValueError("segment_ids may only contain AHA segment IDs 0 through 16")
+    if not present.issubset(set(range(segment_count + 1))):
+        raise ValueError(
+            f"segment_ids may only contain AHA segment IDs 0 through {segment_count}"
+        )
 
-    myocardium_counts = np.zeros(16, dtype=np.int64)
-    scar_counts = np.zeros(16, dtype=np.int64)
-    percentages = np.full(16, np.nan, dtype=float)
-    for segment_id in range(1, 17):
+    myocardium_counts = np.zeros(segment_count, dtype=np.int64)
+    scar_counts = np.zeros(segment_count, dtype=np.int64)
+    percentages = np.full(segment_count, np.nan, dtype=float)
+    for segment_id in range(1, segment_count + 1):
         selected = segments == segment_id
         myocardium_count = int(np.count_nonzero(selected))
         scar_count = int(np.count_nonzero(scar & selected))
@@ -193,11 +272,20 @@ def compute_aha16_scar_percentages(
         scar_counts[segment_id - 1] = scar_count
         if myocardium_count:
             percentages[segment_id - 1] = scar_count / myocardium_count * 100.0
-    return Aha16ScarSummary(
+    return AhaScarSummary(
         scar_percentages=percentages,
         scar_voxel_counts=scar_counts,
         myocardial_voxel_counts=myocardium_counts,
     )
+
+
+def compute_aha16_scar_percentages(
+    scar_mask: ArrayLike,
+    segment_ids: ArrayLike,
+) -> Aha16ScarSummary:
+    """Compatibility API counting native voxels in AHA segments 1 through 16."""
+
+    return compute_aha_scar_percentages(scar_mask, segment_ids, segment_count=16)
 
 
 def compute_lge_scar(

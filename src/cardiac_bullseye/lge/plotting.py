@@ -27,7 +27,7 @@ from ..territory.plotting import (
     CORONARY_DEFAULT_LABEL_COLORS,
 )
 from .mapping import LgeBullseyeResult
-from .scar import Aha16ScarSummary
+from .scar import AhaScarSummary
 
 
 def _save_figure_overwriting(
@@ -233,19 +233,22 @@ def plot_lge_bullseye(
 
 
 def plot_lge_scar_bullseye(
-    summary: Aha16ScarSummary,
+    summary: AhaScarSummary,
     output_path: str | Path | None = None,
     *,
-    title: str = "AHA-16 infarct scar burden",
+    title: str | None = None,
     colormap: str | Colormap | None = None,
     include_apex: bool = True,
     show: bool = True,
 ):
-    """Render native-voxel scar percentage for AHA segments 1 through 16."""
+    """Render native-voxel scar percentages for 16 or 17 AHA segments."""
 
     percentages = np.asarray(summary.scar_percentages, dtype=float)
-    if percentages.shape != (16,):
-        raise ValueError("scar_percentages must contain AHA segments 1 through 16")
+    if percentages.shape not in ((16,), (17,)):
+        raise ValueError("scar_percentages must contain 16 or 17 AHA segments")
+    measured_apex = percentages.size == 17
+    if measured_apex and not include_apex:
+        raise ValueError("include_apex must be True for a 17-value scar summary")
     if np.any(np.isfinite(percentages) & ((percentages < 0.0) | (percentages > 100.0))):
         raise ValueError("scar percentages must lie between 0 and 100")
 
@@ -299,13 +302,32 @@ def plot_lge_scar_bullseye(
             )
 
     if include_apex:
+        apex_value = percentages[16] if measured_apex else np.nan
+        apex_color = (
+            "white" if not measured_apex
+            else "#d7d7d7" if not np.isfinite(apex_value)
+            else color_map(normalization(apex_value))
+        )
         axis.add_patch(
-            Circle((0.0, 0.0), 1.0, facecolor="white", edgecolor="none")
+            Circle((0.0, 0.0), 1.0, facecolor=apex_color, edgecolor="none")
         )
     draw_aha17_boundaries(axis, show_numbers=False, include_apex=include_apex)
     if include_apex:
-        axis.text(0.0, 0.0, "N/A", ha="center", va="center", fontsize=11)
-    axis.set_title(title, pad=16)
+        apex_label = (
+            "N/A" if not measured_apex
+            else "17\nN/A" if not np.isfinite(apex_value)
+            else f"17\n{apex_value:.1f}%"
+        )
+        red, green, blue = to_rgb(apex_color)
+        luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        axis.text(
+            0.0, 0.0, apex_label, ha="center", va="center", fontsize=11,
+            color="black" if luminance > 0.55 else "white",
+        )
+    axis.set_title(
+        f"AHA-{percentages.size} infarct scar burden" if title is None else title,
+        pad=16,
+    )
     colorbar = figure.colorbar(
         ScalarMappable(norm=normalization, cmap=color_map),
         ax=axis,

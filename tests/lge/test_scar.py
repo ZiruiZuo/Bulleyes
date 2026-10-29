@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import csv
 import matplotlib
 import numpy as np
 import os
@@ -31,6 +32,7 @@ from cardiac_bullseye.lge import (
     zoom_limits_about_point,
 )
 from cardiac_bullseye.territory.models import LandmarkPair, StudyData
+from cardiac_bullseye import lge as lge_api
 
 
 def test_scar_threshold_is_computed_independently_from_each_manual_roi():
@@ -554,3 +556,175 @@ def test_empty_myocardium_slice_does_not_open_the_roi_gui(monkeypatch, tmp_path)
     )
 
     assert polygons == [None]
+
+
+def _projection_study(slice_count):
+    y, x = np.ogrid[:25, :25]
+    ring = ((x - 12) ** 2 + (y - 12) ** 2 >= 25) & (
+        (x - 12) ** 2 + (y - 12) ** 2 <= 81
+    )
+    mask = np.repeat(ring[None], slice_count, axis=0).astype(np.uint8)
+    study = StudyData(np.zeros_like(mask, dtype=float), mask, np.arange(slice_count))
+    pair = LandmarkPair(aip=(17.0, 7.0), iip=(19.0, 12.0))
+    return study, pair
+
+
+def test_projected_ids_use_exact_radial_boundaries_and_asymmetric_angles():
+    radii = [0.0, np.nextafter(1.0, 0.0), 1.0, np.nextafter(2.0, 0.0),
+             2.0, np.nextafter(3.0, 0.0), 3.0, np.nextafter(4.0, 0.0), 4.0]
+    study, pair = _projection_study(len(radii))
+
+    ids = lge_api.compute_aha_segment_ids(
+        study, [pair] * len(radii), radii, include_segment_17=True
+    )
+
+    # This oblique voxel has canonical angle 56.2 degrees before the warp,
+    # about 75 degrees afterward: basal segment 3 becomes segment 4.
+    np.testing.assert_array_equal(ids[:, 16, 18], [17, 17, 15, 15, 10, 10, 4, 4, 4])
+    np.testing.assert_array_equal(ids[:, 8, 18], [17, 17, 14, 14, 8, 8, 2, 2, 2])
+    assert ids.dtype == np.uint8
+    assert not ids[study.territory_mask == 0].any()
+
+
+def test_projected_ids_keep_optional_warp_and_manual_centers():
+    study, pair = _projection_study(1)
+    default = lge_api.compute_aha_segment_ids(
+        study, [pair], [3.0], include_segment_17=False, six_segment_warp=False
+    )
+    manual = lge_api.compute_aha_segment_ids(
+        study, [pair], [3.0], include_segment_17=False, six_segment_warp=False,
+        center_overrides=[(15.0, 12.0)],
+    )
+    assert default[0, 16, 18] == 3
+    assert manual[0, 16, 18] == 4
+
+
+def test_projected_ids_interpolate_missing_landmarks_and_keep_deleted_tail_zero():
+    study, pair = _projection_study(4)
+    basal = LandmarkPair(aip=(15.0, 7.0), iip=(19.0, 14.0))
+    middle = LandmarkPair(aip=(16.0, 7.0), iip=(19.0, 13.0))
+    options = dict(include_segment_17=True, deleted_slice_indices={3})
+    actual = lge_api.compute_aha_segment_ids(
+        study, [pair, None, basal, None], [0.0, 2.0, 4.0, 6.0], **options
+    )
+    expected = lge_api.compute_aha_segment_ids(
+        study, [pair, middle, basal, None], [0.0, 2.0, 4.0, 6.0], **options
+    )
+    np.testing.assert_array_equal(actual, expected)
+    assert np.all(actual[0][study.territory_mask[0] > 0] == 17)
+    assert set(np.unique(actual[1])) == {0, 7, 8, 9, 10, 11, 12}
+    assert not actual[3].any()
+
+
+@pytest.mark.parametrize("radii", [
+    [0.0], [[0.0, 2.0, 4.0]], [0.0, np.nan, 4.0], [0.0, 2.0, np.inf],
+    [0.0, 2.0, 2.0], [0.0, 4.0, 2.0], [-0.1, 2.0, 4.0], [0.0, 2.0, 4.1],
+])
+def test_projected_ids_reject_invalid_radii(radii):
+    study, pair = _projection_study(3)
+    with pytest.raises(ValueError, match="source_radii"):
+        lge_api.compute_aha_segment_ids(
+            study, [pair] * 3, radii, include_segment_17=True
+        )
+
+
+def test_projected_ids_validate_retained_applicability_and_deletion():
+    study, pair = _projection_study(3)
+    study.territory_mask[0] = 0
+    ids = lge_api.compute_aha_segment_ids(
+        study, [None, pair, pair], [-2.0, 1.0, 4.0], include_segment_17=False
+    )
+    assert not ids[0].any()
+    assert 17 not in ids
+    for deleted in ({1}, {0, 1, 2}, {3}):
+        with pytest.raises(ValueError):
+            lge_api.compute_aha_segment_ids(
+                study, [pair] * 3, [0.0, 2.0, 4.0],
+                include_segment_17=True, deleted_slice_indices=deleted,
+            )
+    with pytest.raises(ValueError, match="17"):
+        lge_api.compute_aha_segment_ids(
+            study, [pair] * 3, [-2.0, 0.5, 4.0], include_segment_17=False
+        )
+
+
+def test_projected_ids_validate_landmarks_and_centers():
+    study, pair = _projection_study(3)
+    for landmarks, centers, message in (
+        ([pair], None, "landmark"),
+        ([None] * 3, None, "AIP/IIP"),
+        ([pair] * 3, [None], "center_overrides"),
+        ([pair] * 3, [(np.nan, 12.0), None, None], "finite"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            lge_api.compute_aha_segment_ids(
+                study, landmarks, [0.0, 2.0, 4.0], include_segment_17=True,
+                center_overrides=centers,
+            )
+
+
+def test_segment_17_burden_pools_unequal_native_slice_counts():
+    segments = np.array([[[17, 0, 0]], [[17, 17, 17]]], dtype=np.uint8)
+    scar = np.array([[[True, False, False]], [[False, False, False]]])
+    summary = lge_api.compute_aha_scar_percentages(scar, segments, segment_count=17)
+    assert isinstance(summary, lge_api.AhaScarSummary)
+    assert summary.myocardial_voxel_counts[16] == 4
+    assert summary.scar_voxel_counts[16] == 1
+    assert summary.scar_percentages[16] == 25.0  # Not the 50% slice mean.
+    assert np.isnan(summary.scar_percentages[:16]).all()
+
+
+@pytest.mark.parametrize("count", [0, 15, 18, 16.0, True])
+def test_general_scar_summary_requires_exactly_16_or_17_segments(count):
+    with pytest.raises(ValueError, match="16 or 17"):
+        lge_api.compute_aha_scar_percentages([False], [0], segment_count=count)
+
+
+def test_general_scar_summary_rejects_unrepresentable_ids_and_shape_mismatch():
+    for scar, segments, count in (([True], [17], 16), ([True], [18], 17),
+                                   ([True], [1.5], 17), ([True], [-1], 17),
+                                   ([True], [[1]], 17)):
+        with pytest.raises(ValueError):
+            lge_api.compute_aha_scar_percentages(scar, segments, segment_count=count)
+
+
+@pytest.mark.parametrize("count", [16, 17])
+@pytest.mark.parametrize("compatibility_name", [False, True])
+def test_general_scar_csv_preserves_columns_and_exact_segment_row_count(
+    tmp_path, count, compatibility_name
+):
+    ids = np.arange(1, count + 1, dtype=np.uint8)
+    summary = lge_api.compute_aha_scar_percentages(ids == count, ids, segment_count=count)
+    save_csv = save_aha16_scar_csv if compatibility_name else lge_api.save_aha_scar_csv
+    output = save_csv(tmp_path / "aha16_scar.csv", summary)
+    with output.open(encoding="utf-8", newline="") as source:
+        reader = csv.DictReader(source)
+        rows = list(reader)
+    assert reader.fieldnames == ["segment_id", "segment_name", "myocardium_voxels",
+                                 "scar_voxels", "scar_percent"]
+    assert len(rows) == count
+    assert rows[-1]["segment_id"] == str(count)
+    assert rows[-1]["scar_percent"] == "100.000000"
+    if count == 17:
+        assert rows[-1]["segment_name"] == "apex"
+
+
+def test_scar_plot_16_segments_without_apex_leaves_center_blank():
+    summary = compute_aha16_scar_percentages([False], [0])
+    _, axis = plot_lge_scar_bullseye(summary, include_apex=False, show=False)
+    assert not any(text.get_position() == (0.0, 0.0) for text in axis.texts)
+    assert len(axis.patches) == 16
+
+
+def test_scar_plot_measures_segment_17_and_rejects_hiding_it():
+    summary = lge_api.compute_aha_scar_percentages(
+        [True, False, False, False], [17, 17, 17, 17], segment_count=17
+    )
+    figure, axis = plot_lge_scar_bullseye(summary, include_apex=True, show=False)
+    assert axis.get_title() == "AHA-17 infarct scar burden"
+    assert "17\n25.0%" in {text.get_text() for text in axis.texts}
+    color_map = figure.axes[1].collections[-1].cmap
+    np.testing.assert_allclose(axis.patches[-1].get_facecolor(), color_map(0.25))
+    assert len(axis.patches) == 17
+    with pytest.raises(ValueError, match="include_apex"):
+        plot_lge_scar_bullseye(summary, include_apex=False, show=False)

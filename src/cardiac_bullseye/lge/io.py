@@ -245,14 +245,18 @@ def save_lge_scar_mask(
     return path
 
 
-def save_aha16_scar_csv(path: str | Path, summary) -> Path:
-    """Write native myocardial and scar counts for AHA segments 1 through 16."""
+def save_aha_scar_csv(path: str | Path, summary) -> Path:
+    """Write native myocardial and scar counts for 16 or 17 AHA segments."""
 
     percentages = np.asarray(summary.scar_percentages, dtype=float)
     myocardial_counts = np.asarray(summary.myocardial_voxel_counts, dtype=np.int64)
     scar_counts = np.asarray(summary.scar_voxel_counts, dtype=np.int64)
-    if percentages.shape != (16,) or myocardial_counts.shape != (16,) or scar_counts.shape != (16,):
-        raise ValueError("AHA-16 scar summary arrays must each contain 16 values")
+    if (
+        percentages.shape not in ((16,), (17,))
+        or myocardial_counts.shape != percentages.shape
+        or scar_counts.shape != percentages.shape
+    ):
+        raise ValueError("AHA scar summary arrays must each contain 16 or 17 values")
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -267,7 +271,7 @@ def save_aha16_scar_csv(path: str | Path, summary) -> Path:
                 "scar_percent",
             )
         )
-        for segment_id in range(1, 17):
+        for segment_id in range(1, percentages.size + 1):
             percentage = percentages[segment_id - 1]
             writer.writerow(
                 (
@@ -279,3 +283,9 @@ def save_aha16_scar_csv(path: str | Path, summary) -> Path:
                 )
             )
     return path
+
+
+def save_aha16_scar_csv(path: str | Path, summary) -> Path:
+    """Compatibility filename/callable; accepts both 16- and 17-value summaries."""
+
+    return save_aha_scar_csv(path, summary)
