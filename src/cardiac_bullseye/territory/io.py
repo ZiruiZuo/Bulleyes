@@ -16,6 +16,9 @@ from .mapping import (
 from .models import BullseyeResult, LandmarkPair, StudyData
 
 
+LANDMARK_COORDINATE_VERSION = 1
+
+
 def load_study_npz(path: str | Path) -> StudyData:
     """Load a study stored with the project's slice-first NPZ convention."""
 
@@ -260,6 +263,7 @@ def save_landmarks_json(
         slices.append(item)
 
     payload = {
+        "coordinate_version": LANDMARK_COORDINATE_VERSION,
         "coordinate_convention": "zero-based (x, y) image pixel coordinates",
         "point_order": ["AIP", "IIP"],
         **({"annotation_mode": annotation_mode} if annotation_mode else {}),
@@ -288,11 +292,54 @@ def save_landmarks_json(
     temporary_path.replace(path)
 
 
+def _load_landmark_payload(path: Path, *, legacy_default_lge: bool) -> dict:
+    """Resolve coordinate provenance before validating points or image shape.
+
+    The legacy default is opt-in: a similarly named explicitly shared file
+    does not establish provenance. Migration is in memory and never rewrites
+    the user's annotations.
+    """
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if "coordinate_version" in payload:
+        version = payload["coordinate_version"]
+        if type(version) is not int or version != LANDMARK_COORDINATE_VERSION:
+            raise ValueError(f"Unsupported landmark coordinate version: {version!r}")
+        return payload
+
+    is_legacy_name = path.name.endswith("_lge_landmarks.json")
+    if path.name.endswith("_landmarks.json") and not is_legacy_name:
+        return payload
+    if not (legacy_default_lge and is_legacy_name):
+        raise ValueError(
+            f"Ambiguous unversioned landmark file: {path}. Use a versioned "
+            "common landmark file, or explicitly declare the default legacy "
+            "LGE landmark path with legacy_default_lge=True."
+        )
+
+    stored_shape = payload.get("image_shape")
+    if stored_shape is not None:
+        if len(stored_shape) != 3:
+            raise ValueError("Legacy landmark image shape must have three dimensions")
+        payload["image_shape"] = [stored_shape[0], stored_shape[2], stored_shape[1]]
+    for item in payload.get("slices", []):
+        if not isinstance(item, dict):
+            continue
+        for key in ("aip", "iip", "center"):
+            if key in item:
+                point = np.asarray(item[key], dtype=float)
+                if point.shape != (2,) or not np.isfinite(point).all():
+                    raise ValueError(f"Saved {key} must contain two finite values")
+                item[key] = point[::-1].tolist()
+    return payload
+
+
 def load_landmarks_json(
     path: str | Path,
     expected_slice_count: int,
     *,
     expected_image_shape: tuple[int, ...] | None = None,
+    legacy_default_lge: bool = False,
 ) -> list[LandmarkPair | None]:
     """Load saved landmarks, or return an empty annotation list."""
 
@@ -300,7 +347,7 @@ def load_landmarks_json(
     if not path.exists():
         return [None] * expected_slice_count
 
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = _load_landmark_payload(path, legacy_default_lge=legacy_default_lge)
     stored_shape = payload.get("image_shape")
     if (
         expected_image_shape is not None
@@ -353,13 +400,14 @@ def load_center_overrides_json(
     expected_slice_count: int,
     *,
     expected_image_shape: tuple[int, ...] | None = None,
+    legacy_default_lge: bool = False,
 ) -> list[tuple[float, float] | None]:
     """Load optional per-slice manual LV center overrides."""
 
     path = Path(path)
     if not path.exists():
         return [None] * expected_slice_count
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = _load_landmark_payload(path, legacy_default_lge=legacy_default_lge)
     stored_shape = payload.get("image_shape")
     if (
         expected_image_shape is not None

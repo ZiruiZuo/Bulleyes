@@ -50,11 +50,13 @@ def _require_same_geometry(lge_image, mask_image, *, candidate_name="myocardium 
 
 
 def _myocardium_from_image(mask_image, sitk) -> NDArray[np.bool_]:
+    """Collapse segmentation components and return common (slice, x, y) order."""
+
     raw_mask = np.asarray(sitk.GetArrayFromImage(mask_image))
     if raw_mask.ndim == 4:
-        return np.any(raw_mask != 0, axis=-1)
+        return np.any(raw_mask != 0, axis=-1).transpose(0, 2, 1)
     if raw_mask.ndim == 3:
-        return raw_mask != 0
+        return (raw_mask != 0).transpose(0, 2, 1)
     raise ValueError(f"Unsupported myocardium mask array shape: {raw_mask.shape}")
 
 
@@ -74,7 +76,9 @@ def _study_from_lge_and_myocardium(lge_image, mask_image, sitk) -> tuple[StudyDa
         raise ValueError("LGE must be a scalar intensity image")
     _require_same_geometry(lge_image, mask_image)
 
-    lge = np.asarray(sitk.GetArrayFromImage(lge_image), dtype=np.float32)
+    lge = np.asarray(sitk.GetArrayFromImage(lge_image), dtype=np.float32).transpose(
+        0, 2, 1
+    )
     myocardium = _myocardium_from_image(mask_image, sitk)
     if lge.shape != myocardium.shape:
         raise ValueError(
@@ -106,7 +110,8 @@ def load_lge_study(
 
     SimpleITK converts both NIfTI and NRRD physical metadata to its internal
     LPS convention before comparison. Array data are returned in the project's
-    ``(slice, row, column)`` order. The original LGE intensity values are kept.
+    ``(slice, x, y)`` order, matching territory/intensity studies. The original
+    LGE intensity values are kept.
     """
 
     try:
@@ -167,7 +172,7 @@ def load_lge_study_with_scar(
         raise ValueError("scar mask must be a scalar image")
     _require_same_geometry(lge_image, scar_image, candidate_name="scar mask")
 
-    scar = np.asarray(sitk.GetArrayFromImage(scar_image)) != 0
+    scar = (np.asarray(sitk.GetArrayFromImage(scar_image)) != 0).transpose(0, 2, 1)
     if scar.shape != myocardium.shape:
         raise ValueError(
             f"LGE array shape {myocardium.shape} does not match scar mask shape "
@@ -216,20 +221,8 @@ def save_lge_scar_mask(
     lge_image = sitk.ReadImage(str(lge_path))
     myocardium_image = sitk.ReadImage(str(myocardium_mask_path))
     _require_same_geometry(lge_image, myocardium_image)
-    raw_myocardium = np.asarray(sitk.GetArrayFromImage(myocardium_image))
-    if raw_myocardium.ndim == 4:
-        myocardium = np.any(raw_myocardium != 0, axis=-1)
-    elif raw_myocardium.ndim == 3:
-        myocardium = raw_myocardium != 0
-    else:
-        raise ValueError(
-            f"Unsupported myocardium mask array shape: {raw_myocardium.shape}"
-        )
-    occupied = np.flatnonzero(np.any(myocardium, axis=(1, 2)))
-    if occupied.size == 0:
-        raise ValueError("The myocardium mask is empty")
-    first_slice = int(occupied[0])
-    last_slice = int(occupied[-1]) + 1
+    myocardium = _myocardium_from_image(myocardium_image, sitk)
+    first_slice, last_slice = _myocardium_slice_range(myocardium)
     scar = np.asarray(cropped_scar_mask, dtype=bool)
     expected_shape = myocardium[first_slice:last_slice].shape
     if scar.shape != expected_shape:
@@ -242,7 +235,9 @@ def save_lge_scar_mask(
     full_scar[first_slice:last_slice] = (
         scar & myocardium[first_slice:last_slice]
     ).astype(np.uint8)
-    output_image = sitk.GetImageFromArray(full_scar)
+    output_image = sitk.GetImageFromArray(
+        np.ascontiguousarray(full_scar.transpose(0, 2, 1))
+    )
     output_image.CopyInformation(lge_image)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

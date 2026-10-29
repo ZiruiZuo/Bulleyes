@@ -880,6 +880,8 @@ def select_single_reference_interactively(
 def load_saved_landmarks(
     study: StudyData,
     input_path: str | Path,
+    *,
+    legacy_default_lge: bool = False,
 ) -> list[LandmarkPair | None]:
     """Load compatible saved AIP/IIP points without opening an annotation UI."""
 
@@ -893,4 +895,5 @@ def load_saved_landmarks(
         input_path,
         study.slice_count,
         expected_image_shape=study.mr.shape,
+        legacy_default_lge=legacy_default_lge,
     )

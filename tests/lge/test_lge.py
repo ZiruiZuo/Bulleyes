@@ -50,7 +50,7 @@ def _constant_slice_study(values=(10.0, 20.0, 30.0)):
 
 
 def test_loader_checks_same_grid_and_crops_to_myocardial_extent(tmp_path):
-    lge = np.arange(5 * 9 * 9, dtype=np.float32).reshape(5, 9, 9)
+    lge = np.arange(5 * 7 * 9, dtype=np.float32).reshape(5, 7, 9)
     mask = np.zeros_like(lge, dtype=np.uint8)
     mask[1:4, 2:7, 2:7] = 1
     lge_path = tmp_path / "lge.nii.gz"
@@ -60,9 +60,9 @@ def test_loader_checks_same_grid_and_crops_to_myocardial_extent(tmp_path):
 
     study = load_lge_study(lge_path, mask_path)
 
-    assert study.mr.shape == (3, 9, 9)
-    np.testing.assert_array_equal(study.mr, lge[1:4])
-    np.testing.assert_array_equal(study.territory_mask, mask[1:4])
+    assert study.mr.shape == (3, 9, 7)
+    np.testing.assert_array_equal(study.mr, lge[1:4].transpose(0, 2, 1))
+    np.testing.assert_array_equal(study.territory_mask, mask[1:4].transpose(0, 2, 1))
     np.testing.assert_allclose(study.slice_positions, [0.0, 6.0, 12.0])
 
 
@@ -79,11 +79,11 @@ def test_loader_rejects_geometry_mismatch_without_resampling(tmp_path):
 
 
 def test_scar_loader_crops_all_inputs_to_myocardial_extent(tmp_path):
-    lge = np.arange(5 * 9 * 9, dtype=np.float32).reshape(5, 9, 9)
+    lge = np.arange(5 * 7 * 9, dtype=np.float32).reshape(5, 7, 9)
     myocardium = np.zeros_like(lge, dtype=np.uint8)
     myocardium[1:4, 2:7, 2:7] = 1
     scar = np.zeros_like(lge, dtype=np.uint8)
-    scar[2, 4, 4] = 9
+    scar[2, 3, 5] = 9
     lge_path = tmp_path / "lge.nii.gz"
     myocardium_path = tmp_path / "myocardium.seg.nrrd"
     scar_path = tmp_path / "scar.nrrd"
@@ -93,11 +93,14 @@ def test_scar_loader_crops_all_inputs_to_myocardial_extent(tmp_path):
 
     loaded = load_lge_study_with_scar(lge_path, myocardium_path, scar_path)
 
-    assert loaded.study.mr.shape == (3, 9, 9)
-    assert loaded.scar_mask.shape == (3, 9, 9)
-    np.testing.assert_array_equal(loaded.study.mr, lge[1:4])
-    np.testing.assert_array_equal(loaded.study.territory_mask, myocardium[1:4])
-    np.testing.assert_array_equal(loaded.scar_mask, scar[1:4] != 0)
+    assert loaded.study.mr.shape == (3, 9, 7)
+    assert loaded.scar_mask.shape == (3, 9, 7)
+    np.testing.assert_array_equal(loaded.study.mr, lge[1:4].transpose(0, 2, 1))
+    np.testing.assert_array_equal(
+        loaded.study.territory_mask, myocardium[1:4].transpose(0, 2, 1)
+    )
+    assert loaded.scar_mask[1, 5, 3]
+    assert np.count_nonzero(loaded.scar_mask) == 1
 
 
 def test_scar_loader_accepts_empty_scar_mask(tmp_path):

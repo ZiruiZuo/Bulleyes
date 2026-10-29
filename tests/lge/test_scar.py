@@ -226,7 +226,7 @@ def test_roi_gui_left_drag_paints_a_brush_mask(monkeypatch, tmp_path):
     )
 
     assert selected[0] is not None
-    assert selected[0][7, 3:12].all()
+    assert selected[0][3:12, 7].all()
     np.testing.assert_array_equal(
         load_reference_roi_masks(output, study.mr.shape)[0], selected[0]
     )
@@ -291,6 +291,60 @@ def test_roi_gui_fresh_mode_ignores_a_saved_mask(monkeypatch, tmp_path):
     np.testing.assert_array_equal(
         load_reference_roi_masks(output, study.mr.shape)[0], selected[0]
     )
+
+
+def test_rectangular_roi_gui_displays_native_and_maps_paint_and_erase(monkeypatch, tmp_path):
+    from cardiac_bullseye.lge import reference_roi as module
+
+    callbacks = {}
+
+    class FakeButton:
+        def __init__(self, _axis, label):
+            self.label = label
+
+        def on_clicked(self, callback):
+            callbacks[self.label] = callback
+
+    internal_image = np.arange(40 * 24, dtype=float).reshape(40, 24)
+    myocardium = np.zeros((40, 24), dtype=np.uint8)
+    myocardium[15:31, 7:16] = 1
+
+    def paint_erase_and_accept(canvas, timeout=0):
+        axis = canvas.figure.axes[0]
+        np.testing.assert_array_equal(axis.images[0].get_array(), internal_image.T)
+        assert axis.get_xlim() == pytest.approx((-0.5, 39.5))
+        assert axis.get_ylim() == pytest.approx((23.5, -0.5))
+        assert axis.lines[0].get_xdata()[0] == 19.0
+        assert axis.lines[0].get_ydata()[0] == 8.0
+
+        def dispatch(name, point, button):
+            display_x, display_y = axis.transData.transform(point)
+            event = MouseEvent(name, canvas, display_x, display_y, button=button)
+            canvas.callbacks.process(name, event)
+
+        dispatch("button_press_event", (17.0, 11.0), MouseButton.LEFT)
+        dispatch("motion_notify_event", (28.0, 11.0), MouseButton.LEFT)
+        dispatch("button_release_event", (28.0, 11.0), MouseButton.LEFT)
+        dispatch("button_press_event", (17.0, 11.0), MouseButton.RIGHT)
+        dispatch("button_release_event", (17.0, 11.0), MouseButton.RIGHT)
+        callbacks["Accept"](None)
+
+    monkeypatch.setattr(module, "Button", FakeButton)
+    monkeypatch.setattr(module, "_ensure_interactive_backend", lambda: None)
+    monkeypatch.setattr(module.plt, "show", lambda **_kwargs: None)
+    monkeypatch.setattr(FigureCanvasBase, "start_event_loop", paint_erase_and_accept)
+    study = StudyData(internal_image[None], myocardium[None], np.asarray([0.0]))
+    output = tmp_path / "rois.json"
+
+    selected = select_reference_rois_interactively(
+        study, [LandmarkPair(aip=(8.0, 19.0), iip=(14.0, 27.0))], output, min_roi_voxels=2
+    )
+
+    assert selected[0].shape == (40, 24)
+    assert selected[0][25:29, 11].all()
+    assert not selected[0][17, 11]
+    assert not np.any(selected[0] & ~myocardium.astype(bool))
+    np.testing.assert_array_equal(load_reference_roi_masks(output, study.mr.shape)[0], selected[0])
 
 
 def test_scar_bullseye_plots_segments_1_to_16_and_marks_center_na(tmp_path):
@@ -370,12 +424,13 @@ def test_scar_plot_keeps_old_png_if_atomic_replace_remains_locked(
 
 
 def test_scar_mask_is_restored_to_the_complete_original_lge_grid(tmp_path):
-    lge = np.zeros((4, 5, 5), dtype=np.float32)
+    lge = np.zeros((4, 5, 7), dtype=np.float32)
     myocardium = np.zeros_like(lge, dtype=np.uint8)
-    myocardium[1:3, 1:4, 1:4] = 1
+    myocardium[1:3, 1:4, 1:6] = 1
     lge_image = sitk.GetImageFromArray(lge)
     lge_image.SetSpacing((0.8, 0.9, 6.0))
     lge_image.SetOrigin((1.0, 2.0, 3.0))
+    lge_image.SetDirection((-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0))
     mask_image = sitk.GetImageFromArray(myocardium)
     mask_image.CopyInformation(lge_image)
     lge_path = tmp_path / "lge.nii.gz"
@@ -383,17 +438,18 @@ def test_scar_mask_is_restored_to_the_complete_original_lge_grid(tmp_path):
     output = tmp_path / "scar.nii.gz"
     sitk.WriteImage(lge_image, str(lge_path))
     sitk.WriteImage(mask_image, str(mask_path))
-    cropped_scar = np.zeros((2, 5, 5), dtype=bool)
-    cropped_scar[0, 2, 2] = True
-    cropped_scar[1, 3, 3] = True
+    cropped_scar = np.zeros((2, 7, 5), dtype=bool)
+    cropped_scar[0, 5, 2] = True
+    cropped_scar[1, 4, 3] = True
+    cropped_scar[0, 0, 0] = True  # Saved scar remains clipped to myocardium.
 
     save_lge_scar_mask(output, lge_path, mask_path, cropped_scar)
 
     saved_image = sitk.ReadImage(str(output))
     saved = sitk.GetArrayFromImage(saved_image)
     assert saved.shape == lge.shape
-    assert saved[1, 2, 2] == 1
-    assert saved[2, 3, 3] == 1
+    assert saved[1, 2, 5] == 1
+    assert saved[2, 3, 4] == 1
     assert np.count_nonzero(saved) == 2
     np.testing.assert_allclose(saved_image.GetSpacing(), lge_image.GetSpacing())
     np.testing.assert_allclose(saved_image.GetOrigin(), lge_image.GetOrigin())

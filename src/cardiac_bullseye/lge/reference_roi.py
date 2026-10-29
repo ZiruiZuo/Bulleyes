@@ -15,7 +15,10 @@ from matplotlib.path import Path as MatplotlibPath
 from numpy.typing import NDArray
 
 from ..territory.interaction import zoom_limits_about_point
-from ..territory.landmarks import annotation_display_transform
+from ..territory.landmarks import (
+    annotation_display_transform,
+    original_xy_to_display_xy,
+)
 from ..territory.models import LandmarkPair, StudyData
 from .scar import compute_reference_statistics
 
@@ -401,7 +404,7 @@ def select_reference_rois_interactively(
         )
 
     def full_view() -> None:
-        height, width = study.mr.shape[1:]
+        width, height = study.mr.shape[1:]
         axis.set_xlim(-0.5, width - 0.5)
         axis.set_ylim(height - 0.5, -0.5)
 
@@ -409,8 +412,10 @@ def select_reference_rois_interactively(
         message: str | None = None, *, preserve_view: bool = True
     ) -> None:
         slice_index = int(state["slice_index"])
-        image = annotation_display_transform(study.mr[slice_index])
-        myocardium = annotation_display_transform(study.territory_mask[slice_index] > 0)
+        image = annotation_display_transform(study.mr[slice_index], transpose=True)
+        myocardium = annotation_display_transform(
+            study.territory_mask[slice_index] > 0, transpose=True
+        )
         old_xlim = axis.get_xlim() if preserve_view and axis.has_data() else None
         old_ylim = axis.get_ylim() if preserve_view and axis.has_data() else None
         axis.clear()
@@ -422,9 +427,11 @@ def select_reference_rois_interactively(
         axis.contour(myocardium, levels=[0.5], colors=["yellow"], linewidths=1.0)
         pair = landmarks[slice_index]
         if pair is not None:
-            axis.plot(pair.aip[0], pair.aip[1], "o", color="red", markersize=7)
-            axis.plot(pair.iip[0], pair.iip[1], "o", color="cyan", markersize=7)
-        selected = current_selected_mask()
+            aip = original_xy_to_display_xy(pair.aip, transpose=True)
+            iip = original_xy_to_display_xy(pair.iip, transpose=True)
+            axis.plot(*aip, "o", color="red", markersize=7)
+            axis.plot(*iip, "o", color="cyan", markersize=7)
+        selected = annotation_display_transform(current_selected_mask(), transpose=True)
         roi_overlay = np.zeros((*selected.shape, 4), dtype=float)
         roi_overlay[selected] = (0.0, 0.65, 1.0, 0.5)
         axis.imshow(roi_overlay)
@@ -533,8 +540,9 @@ def select_reference_rois_interactively(
         state["paint_value"] = event.button is MouseButton.LEFT
         point = (float(event.xdata), float(event.ydata))
         state["last_xy"] = point
+        # The transposed view maps native display pixels into the common mask.
         apply_brush_stroke(
-            mask,
+            mask.T,
             point,
             point,
             radius=float(brush_slider.val),
@@ -573,7 +581,7 @@ def select_reference_rois_interactively(
         assert isinstance(mask, np.ndarray)
         point = (float(event.xdata), float(event.ydata))
         apply_brush_stroke(
-            mask,
+            mask.T,
             last_xy,
             point,
             radius=float(brush_slider.val),
@@ -609,7 +617,7 @@ def select_reference_rois_interactively(
             axis.get_ylim(),
             (float(event.xdata), float(event.ydata)),
             scale=scale,
-            image_shape=study.mr.shape[1:],
+            image_shape=study.mr.shape[1:][::-1],
         )
         axis.set_xlim(xlim)
         axis.set_ylim(ylim)
