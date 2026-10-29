@@ -42,7 +42,9 @@ def test_old_landmark_json_has_no_deleted_slices(tmp_path):
     )
 
     assert load_deleted_slice_indices(path, 2) == set()
-    assert load_center_overrides_json(path, 2) == [None, None]
+    assert load_center_overrides_json(
+        path, 2, expected_common_basename="case_landmarks.json"
+    ) == [None, None]
 
 
 def test_manual_centers_are_saved_for_accepted_and_skipped_slices(tmp_path):
@@ -153,11 +155,11 @@ def test_recognized_unversioned_common_file_keeps_asymmetric_coordinates(tmp_pat
         "slices": [{"aip": [2.5, 8.0], "iip": [4.0, 10.0], "center": [3.0, 9.0]}],
     }), encoding="utf-8")
 
-    assert load_landmarks_json(path, 1, expected_image_shape=(1, 12, 6)) == [
+    assert load_landmarks_json(path, 1, expected_image_shape=(1, 12, 6), expected_common_basename="case_landmarks.json") == [
         LandmarkPair(aip=(2.5, 8.0), iip=(4.0, 10.0))
     ]
     assert load_center_overrides_json(
-        path, 1, expected_image_shape=(1, 12, 6)
+        path, 1, expected_image_shape=(1, 12, 6), expected_common_basename="case_landmarks.json"
     ) == [(3.0, 9.0)]
 
 

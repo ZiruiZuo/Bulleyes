@@ -168,6 +168,58 @@ def test_one_retained_slice_is_rejected_during_preparation(tmp_path):
         _prepare(study, path)
 
 
+@pytest.mark.parametrize("mode", ["per-slice", "single-reference"])
+@pytest.mark.parametrize("count", [1, 3])
+def test_insufficient_myocardial_slices_fail_before_fresh_annotation(tmp_path, monkeypatch, mode, count):
+    module = import_module("cardiac_bullseye.workflows.bullseye_frame")
+    study = _study(count)
+    study.territory_mask[1:] = 0
+
+    def unexpected_annotation(*_args, **_kwargs):
+        pytest.fail("Insufficient myocardial slices must fail before annotation")
+
+    monkeypatch.setattr(module, "select_landmarks_interactively", unexpected_annotation)
+    monkeypatch.setattr(module, "select_single_reference_interactively", unexpected_annotation)
+    with pytest.raises(ValueError, match="at least two retained slices"):
+        _prepare(study, tmp_path / "missing.json", reuse_saved_points=False, landmark_mode=mode)
+
+
+@pytest.mark.parametrize("basename, accepted", [
+    ("other_patient_landmarks.json", False),
+    ("patient_lge_landmarks.json", True),
+])
+def test_unversioned_common_reuse_requires_the_configured_case(tmp_path, basename, accepted):
+    study = _study()
+    path = tmp_path / basename
+    path.write_text(json.dumps({"image_shape": list(study.mr.shape), "slices": [
+        {"aip": [4., 1.], "iip": [4., 3.], "center": [4.5, 2.5]},
+    ] * 4}))
+    options = dict(expected_common_basename="patient_lge_landmarks.json")
+    if not accepted:
+        with pytest.raises(ValueError, match="Ambiguous unversioned"):
+            _prepare(study, path, **options)
+    else:
+        frame = _prepare(study, path, **options)
+        assert frame.landmarks == [PAIR] * 4
+        assert frame.center_overrides == [(4.5, 2.5)] * 4
+
+
+def test_fresh_annotation_deletions_still_require_two_retained_myocardial_slices(tmp_path, monkeypatch):
+    module = import_module("cardiac_bullseye.workflows.bullseye_frame")
+    study = _study()
+
+    def select(study, path, **_kwargs):
+        save_landmarks_json(
+            path, [PAIR, None, None, None], image_shape=study.mr.shape,
+            deleted_slice_indices={1, 2, 3},
+        )
+        return [PAIR, None, None, None]
+
+    monkeypatch.setattr(module, "select_landmarks_interactively", select)
+    with pytest.raises(ValueError, match="at least two retained slices"):
+        _prepare(study, tmp_path / "fresh.json", reuse_saved_points=False)
+
+
 @pytest.mark.parametrize("legacy", [False, True])
 def test_legacy_default_applies_to_both_landmarks_and_centers(tmp_path, legacy):
     study = _study()

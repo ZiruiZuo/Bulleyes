@@ -124,6 +124,7 @@ def generate_bullseye(
         projection=projection,
         slice_positions=cardiac_geometry.slice_positions_mm,
         transpose_for_display=True,
+        expected_common_basename=config.case.output_path("landmarks.json").name,
     )
     landmarks = frame.landmarks
     deleted_slice_indices = frame.deleted_slice_indices

@@ -378,6 +378,34 @@ def test_legacy_default_coordinates_migrate_only_at_default_path(
         assert generate_lge_bullseye(config, projection="1-4").landmarks == path
 
 
+@pytest.mark.parametrize("basename, accepted", [
+    ("other_patient_landmarks.json", False),
+    ("patient_lge_landmarks.json", True),
+])
+def test_lge_workflow_uses_case_specific_common_legacy_provenance(
+    monkeypatch, tmp_path, basename, accepted
+):
+    config, ring = _write_shared_case(tmp_path)
+    path = tmp_path / basename
+    path.write_text(json.dumps({"image_shape": [5, 29, 25], "slices": [
+        {"aip": [12., 7.], "iip": [12., 21.], "center": [12., 14.]}
+    ] * 5}))
+    config = replace(
+        config, case=replace(config.case, id="patient_lge"),
+        lge_bullseye=replace(config.lge_bullseye, landmarks_path=path),
+    )
+    monkeypatch.setattr(
+        "cardiac_bullseye.workflows.bullseye_frame.select_landmarks_interactively",
+        _no_annotation,
+    )
+    _stub_rois(monkeypatch, ring)
+    if accepted:
+        assert generate_lge_bullseye(config).landmarks == path
+    else:
+        with pytest.raises(ValueError, match="Ambiguous unversioned"):
+            generate_lge_bullseye(config)
+
+
 @pytest.mark.parametrize("problem, match", [
     ("shape", "image shape"), ("version", "Unsupported landmark coordinate version"),
     ("one-slice", "at least two retained slices"), ("deletion", "contiguous basal")

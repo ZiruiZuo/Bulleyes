@@ -292,7 +292,9 @@ def save_landmarks_json(
     temporary_path.replace(path)
 
 
-def _load_landmark_payload(path: Path, *, legacy_default_lge: bool) -> dict:
+def _load_landmark_payload(
+    path: Path, *, legacy_default_lge: bool, expected_common_basename: str | None
+) -> dict:
     """Resolve coordinate provenance before validating points or image shape.
 
     The legacy default is opt-in: a similarly named explicitly shared file
@@ -308,12 +310,13 @@ def _load_landmark_payload(path: Path, *, legacy_default_lge: bool) -> dict:
         return payload
 
     is_legacy_name = path.name.endswith("_lge_landmarks.json")
-    if path.name.endswith("_landmarks.json") and not is_legacy_name:
+    if not legacy_default_lge and path.name == expected_common_basename:
         return payload
     if not (legacy_default_lge and is_legacy_name):
         raise ValueError(
             f"Ambiguous unversioned landmark file: {path}. Use a versioned "
-            "common landmark file, or explicitly declare the default legacy "
+            "common landmark file or the configured case's exact common "
+            "landmark basename, or explicitly declare the default legacy "
             "LGE landmark path with legacy_default_lge=True."
         )
 
@@ -340,6 +343,7 @@ def load_landmarks_json(
     *,
     expected_image_shape: tuple[int, ...] | None = None,
     legacy_default_lge: bool = False,
+    expected_common_basename: str | None = None,
 ) -> list[LandmarkPair | None]:
     """Load saved landmarks, or return an empty annotation list."""
 
@@ -347,7 +351,10 @@ def load_landmarks_json(
     if not path.exists():
         return [None] * expected_slice_count
 
-    payload = _load_landmark_payload(path, legacy_default_lge=legacy_default_lge)
+    payload = _load_landmark_payload(
+        path, legacy_default_lge=legacy_default_lge,
+        expected_common_basename=expected_common_basename,
+    )
     stored_shape = payload.get("image_shape")
     if (
         expected_image_shape is not None
@@ -401,13 +408,17 @@ def load_center_overrides_json(
     *,
     expected_image_shape: tuple[int, ...] | None = None,
     legacy_default_lge: bool = False,
+    expected_common_basename: str | None = None,
 ) -> list[tuple[float, float] | None]:
     """Load optional per-slice manual LV center overrides."""
 
     path = Path(path)
     if not path.exists():
         return [None] * expected_slice_count
-    payload = _load_landmark_payload(path, legacy_default_lge=legacy_default_lge)
+    payload = _load_landmark_payload(
+        path, legacy_default_lge=legacy_default_lge,
+        expected_common_basename=expected_common_basename,
+    )
     stored_shape = payload.get("image_shape")
     if (
         expected_image_shape is not None

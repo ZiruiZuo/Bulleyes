@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from numpy.typing import ArrayLike
 
 from ..territory.io import load_center_overrides_json, load_deleted_slice_indices
@@ -39,6 +40,7 @@ def prepare_bullseye_frame(
     slice_positions: ArrayLike,
     transpose_for_display: bool,
     legacy_lge_default: bool = False,
+    expected_common_basename: str | None = None,
     cancel_is_error: bool = False,
 ) -> BullseyeFrameInputs:
     """Load or freshly annotate a study, then validate its complete plot frame."""
@@ -46,10 +48,13 @@ def prepare_bullseye_frame(
     if landmark_mode not in {"per-slice", "single-reference"}:
         raise ValueError("landmark_mode must be 'per-slice' or 'single-reference'")
     minimum_radius = projection_minimum_radius(projection)
+    if np.count_nonzero(np.any(study.territory_mask != 0, axis=(1, 2))) < 2:
+        raise ValueError("mask-anchored mapping requires at least two retained slices containing myocardium")
     landmark_path = Path(landmark_path)
     if reuse_saved_points and landmark_path.is_file():
         landmarks = load_saved_landmarks(
-            study, landmark_path, legacy_default_lge=legacy_lge_default
+            study, landmark_path, legacy_default_lge=legacy_lge_default,
+            expected_common_basename=expected_common_basename,
         )
     else:
         select = (
@@ -71,6 +76,7 @@ def prepare_bullseye_frame(
         study.slice_count,
         expected_image_shape=study.mr.shape,
         legacy_default_lge=legacy_lge_default,
+        expected_common_basename=expected_common_basename,
     )
     if not any(pair is not None for pair in landmarks):
         raise RuntimeError("No slice has a valid AIP/IIP pair")

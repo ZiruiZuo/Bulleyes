@@ -101,10 +101,12 @@ JSON 必须对应裁剪后的层索引。相同 shape 本身不能证明配准�
 `Delete` 必须从基底端连续删除；至少保留两个不同位置的心肌层，否则映射前报错。
 
 新 JSON 写入 `coordinate_version = 1`，采用共同的 `(slice, x, y)` 图像顺序和
-对应的层内像素坐标。无版本的旧 `*_landmarks.json`（不包括 `*_lge_landmarks.json`）按已知
-共同格式读取；只有未设置 `landmarks_path` 时，默认的旧
+对应的层内像素坐标。无版本的旧文件只有文件名恰好为当前配置 case id 对应的
+`<case>_landmarks.json` 时才按共同格式读取；其他患者的同后缀文件也会被拒绝。
+例如 case id 为 `patient_lge` 时，共同文件 `patient_lge_landmarks.json` 仍可读取。
+只有未设置 `landmarks_path` 时，默认的旧
 `<case>_lge_landmarks.json` 才会在内存中迁移旧 LGE 的转置坐标（含手动质心）。
-迁移不改写原文件。显式共享路径即使名为 `*_lge_landmarks.json` 也不会启用该
+迁移不改写原文件。显式共享路径不会启用该
 旧 LGE 推断；其他来源不明的无版本文件和不支持的版本会被拒绝，需重新标注保存。
 
 ## 用法一：只生成短轴

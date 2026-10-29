@@ -69,6 +69,7 @@ def generate_lge_mask_bullseye(
         slice_positions=loaded.study.slice_positions,
         transpose_for_display=True,
         legacy_lge_default=options.landmarks_path is None,
+        expected_common_basename=config.case.output_path("landmarks.json").name,
         cancel_is_error=True,
     )
 

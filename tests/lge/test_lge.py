@@ -66,6 +66,40 @@ def test_loader_checks_same_grid_and_crops_to_myocardial_extent(tmp_path):
     np.testing.assert_allclose(study.slice_positions, [0.0, 6.0, 12.0])
 
 
+def test_rectangular_nifti_loaders_reuse_asymmetric_shared_points_and_centers(tmp_path):
+    from cardiac_bullseye.intensity.io import load_intensity_study_nifti
+    from cardiac_bullseye.territory.io import save_landmarks_json
+    from cardiac_bullseye.workflows.bullseye_frame import prepare_bullseye_frame
+
+    native = np.arange(3 * 7 * 11, dtype=np.float32).reshape(3, 7, 11)
+    mask = np.zeros(native.shape, dtype=np.uint8)
+    mask[:, 1:6, 2:10] = 1
+    image_path, mask_path = tmp_path / "lge.nii.gz", tmp_path / "mask.nii.gz"
+    _write_image(image_path, native)
+    _write_image(mask_path, mask)
+    intensity_study = load_intensity_study_nifti(image_path, mask_path)
+    lge_study = load_lge_study(image_path, mask_path)
+    assert intensity_study.mr.shape == lge_study.mr.shape == (3, 11, 7)
+    assert intensity_study.mr[1, 8, 3] == lge_study.mr[1, 8, 3] == native[1, 3, 8]
+    np.testing.assert_array_equal(intensity_study.territory_mask, lge_study.territory_mask)
+    pair = LandmarkPair(aip=(2., 8.), iip=(5., 9.))
+    centers = [(3.5, 7.5), (4., 6.5), None]
+    path = tmp_path / "shared.json"
+    save_landmarks_json(
+        path, [pair] * 3, image_shape=intensity_study.mr.shape, center_overrides=centers
+    )
+    before = path.read_bytes()
+    frames = [prepare_bullseye_frame(
+        study, path, reuse_saved_points=True, landmark_mode="per-slice",
+        projection="1-4", slice_positions=study.slice_positions, transpose_for_display=True,
+    ) for study in (intensity_study, lge_study)]
+    for frame in frames:
+        assert frame.landmarks == [pair] * 3
+        assert frame.center_overrides == centers
+        np.testing.assert_array_equal(frame.radial_frame.source_radii, [1., 2.5, 4.])
+    assert path.read_bytes() == before
+
+
 def test_loader_rejects_geometry_mismatch_without_resampling(tmp_path):
     volume = np.zeros((3, 9, 9), dtype=np.float32)
     volume[:, 2:7, 2:7] = 1

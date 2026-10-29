@@ -13,12 +13,12 @@ def test_bullseye_workflow_requests_a_fresh_transposed_nifti_annotation_view(
     from cardiac_bullseye.workflows import bullseye as module
 
     study = StudyData(
-        mr=np.ones((1, 4, 6), dtype=float),
-        territory_mask=np.ones((1, 4, 6), dtype=np.uint8),
-        slice_positions=np.asarray([0.0]),
+        mr=np.ones((2, 4, 6), dtype=float),
+        territory_mask=np.ones((2, 4, 6), dtype=np.uint8),
+        slice_positions=np.asarray([0.0, 6.0]),
     )
 
-    geometry = SimpleNamespace(slice_positions_mm=np.asarray([0.0]))
+    geometry = SimpleNamespace(slice_positions_mm=np.asarray([0.0, 6.0]))
     monkeypatch.setattr(module, "load_cardiac_geometry", lambda _path: geometry)
     monkeypatch.setattr(
         module, "validate_geometry_against_short_axis_nifti", lambda *_args: None
@@ -36,7 +36,7 @@ def test_bullseye_workflow_requests_a_fresh_transposed_nifti_annotation_view(
         assert resume_existing is False
         assert transpose_for_display is True
         assert cancel_is_error is False
-        return [None]
+        return [None, None]
 
     monkeypatch.setattr(
         frame_module, "select_landmarks_interactively", select_transposed_view
@@ -52,11 +52,11 @@ def test_bullseye_workflow_uses_single_reference_annotation_mode(
     from cardiac_bullseye.workflows import bullseye as module
 
     study = StudyData(
-        mr=np.ones((1, 4, 6), dtype=float),
-        territory_mask=np.ones((1, 4, 6), dtype=np.uint8),
-        slice_positions=np.asarray([0.0]),
+        mr=np.ones((2, 4, 6), dtype=float),
+        territory_mask=np.ones((2, 4, 6), dtype=np.uint8),
+        slice_positions=np.asarray([0.0, 6.0]),
     )
-    geometry = SimpleNamespace(slice_positions_mm=np.asarray([0.0]))
+    geometry = SimpleNamespace(slice_positions_mm=np.asarray([0.0, 6.0]))
     calls = []
     monkeypatch.setattr(module, "load_cardiac_geometry", lambda _path: geometry)
     monkeypatch.setattr(
@@ -83,7 +83,7 @@ def test_bullseye_workflow_uses_single_reference_annotation_mode(
         calls.append(
             (selected_study, resume_existing, transpose_for_display)
         )
-        return [None]
+        return [None, None]
 
     monkeypatch.setattr(
         frame_module,
@@ -108,11 +108,11 @@ def test_bullseye_workflow_reuses_landmarks_without_opening_annotation_ui(
         bullseye=replace(app_config.bullseye, reuse_saved_points=True),
     )
     study = StudyData(
-        mr=np.ones((1, 4, 6), dtype=float),
-        territory_mask=np.ones((1, 4, 6), dtype=np.uint8),
-        slice_positions=np.asarray([0.0]),
+        mr=np.ones((2, 4, 6), dtype=float),
+        territory_mask=np.ones((2, 4, 6), dtype=np.uint8),
+        slice_positions=np.asarray([0.0, 6.0]),
     )
-    geometry = SimpleNamespace(slice_positions_mm=np.asarray([0.0]))
+    geometry = SimpleNamespace(slice_positions_mm=np.asarray([0.0, 6.0]))
     monkeypatch.setattr(module, "load_cardiac_geometry", lambda _path: geometry)
     monkeypatch.setattr(
         module, "validate_geometry_against_short_axis_nifti", lambda *_args: None
@@ -127,13 +127,13 @@ def test_bullseye_workflow_reuses_landmarks_without_opening_annotation_ui(
     )
     config.case.output_path("landmarks.json").touch()
     monkeypatch.setattr(
-        frame_module, "load_saved_landmarks", lambda *_args, **_kwargs: [None]
+        frame_module, "load_saved_landmarks", lambda *_args, **_kwargs: [None, None]
     )
     monkeypatch.setattr(
         frame_module, "load_deleted_slice_indices", lambda *_args: set()
     )
     monkeypatch.setattr(
-        frame_module, "load_center_overrides_json", lambda *_args, **_kwargs: [None]
+        frame_module, "load_center_overrides_json", lambda *_args, **_kwargs: [None, None]
     )
 
     with pytest.raises(RuntimeError, match="No slice has a valid AIP/IIP pair"):

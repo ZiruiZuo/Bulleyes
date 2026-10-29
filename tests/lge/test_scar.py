@@ -569,6 +569,28 @@ def _projection_study(slice_count):
     return study, pair
 
 
+def test_decimal_spacing_shared_frame_preserves_legacy_aha16_assignment():
+    from cardiac_bullseye.territory.radial import build_mask_anchored_radial_frame
+
+    original, pair = _projection_study(10)
+    study = StudyData(original.mr, original.territory_mask, np.arange(10) * 7.3)
+    frame = build_mask_anchored_radial_frame(study.territory_mask, study.slice_positions)
+    projected = lge_api.compute_aha_segment_ids(
+        study, [pair] * 10, frame.source_radii, include_segment_17=False
+    )
+    legacy = compute_aha16_segment_ids(study, [pair] * 10)
+
+    np.testing.assert_array_equal(projected[:, 16, 18], [15, 15, 15, 10, 10, 10, 4, 4, 4, 4])
+    np.testing.assert_array_equal(projected, legacy)
+    scar = np.zeros(study.mr.shape, dtype=bool)
+    scar[3, 16, 18] = scar[6, 16, 18] = True
+    actual = compute_aha16_scar_percentages(scar, projected)
+    expected = compute_aha16_scar_percentages(scar, legacy)
+    np.testing.assert_array_equal(actual.myocardial_voxel_counts, expected.myocardial_voxel_counts)
+    np.testing.assert_array_equal(actual.scar_voxel_counts, expected.scar_voxel_counts)
+    np.testing.assert_array_equal(actual.scar_percentages, expected.scar_percentages)
+
+
 def test_projected_ids_use_exact_radial_boundaries_and_asymmetric_angles():
     radii = [0.0, np.nextafter(1.0, 0.0), 1.0, np.nextafter(2.0, 0.0),
              2.0, np.nextafter(3.0, 0.0), 3.0, np.nextafter(4.0, 0.0), 4.0]

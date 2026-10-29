@@ -78,6 +78,7 @@ def generate_intensity_bullseye(
         projection=projection,
         slice_positions=radial_slice_positions,
         transpose_for_display=True,
+        expected_common_basename=config.case.output_path("landmarks.json").name,
     )
     landmarks = frame.landmarks
     deleted = frame.deleted_slice_indices

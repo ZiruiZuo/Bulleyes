@@ -11,6 +11,19 @@ from numpy.typing import ArrayLike, NDArray
 from .mapping import last_retained_slice_index
 
 
+def _map_frame_positions(positions, apical_position, basal_position, minimum_radius):
+    radii = minimum_radius + (4.0 - minimum_radius) * (
+        np.asarray(positions, dtype=float) - apical_position
+    ) / (basal_position - apical_position)
+    # Decimal physical spacing can move an exact AHA boundary by a few ULPs.
+    # Stabilize only frame-generated radii; caller-supplied scar radii retain
+    # strict comparisons, including values immediately below a boundary.
+    for boundary in (0.0, 1.0, 2.0, 3.0, 4.0):
+        tolerance = 8 * np.finfo(float).eps * max(1.0, boundary)
+        radii = np.where(np.abs(radii - boundary) <= tolerance, boundary, radii)
+    return radii
+
+
 def projection_minimum_radius(projection: str) -> float:
     """Translate a public projection name into its apical plot radius."""
 
@@ -35,11 +48,8 @@ class MaskAnchoredRadialFrame:
     def map_positions(self, positions: ArrayLike) -> NDArray[np.float64]:
         """Map physical long-axis positions into this frame's plot radii."""
 
-        values = np.asarray(positions, dtype=float)
-        return self.minimum_radius + (4.0 - self.minimum_radius) * (
-            values - self.apical_position
-        ) / (
-            self.basal_position - self.apical_position
+        return _map_frame_positions(
+            positions, self.apical_position, self.basal_position, self.minimum_radius
         )
 
 
@@ -80,9 +90,9 @@ def build_mask_anchored_radial_frame(
 
     apical_position = float(positions[apical_index])
     basal_position = float(positions[basal_index])
-    source_radii = minimum_radius + (4.0 - minimum_radius) * (
-        positions - apical_position
-    ) / (basal_position - apical_position)
+    source_radii = _map_frame_positions(
+        positions, apical_position, basal_position, minimum_radius
+    )
     return MaskAnchoredRadialFrame(
         source_radii=source_radii,
         minimum_radius=float(minimum_radius),

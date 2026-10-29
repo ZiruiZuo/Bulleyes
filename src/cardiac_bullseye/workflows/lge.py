@@ -79,6 +79,7 @@ def generate_lge_bullseye(
         slice_positions=study.slice_positions,
         transpose_for_display=True,
         legacy_lge_default=config.lge_bullseye.landmarks_path is None,
+        expected_common_basename=config.case.output_path("landmarks.json").name,
     )
     landmarks = frame.landmarks
     deleted = frame.deleted_slice_indices

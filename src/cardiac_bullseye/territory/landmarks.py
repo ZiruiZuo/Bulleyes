@@ -882,6 +882,7 @@ def load_saved_landmarks(
     input_path: str | Path,
     *,
     legacy_default_lge: bool = False,
+    expected_common_basename: str | None = None,
 ) -> list[LandmarkPair | None]:
     """Load compatible saved AIP/IIP points without opening an annotation UI."""
 
@@ -896,4 +897,5 @@ def load_saved_landmarks(
         study.slice_count,
         expected_image_shape=study.mr.shape,
         legacy_default_lge=legacy_default_lge,
+        expected_common_basename=expected_common_basename,
     )

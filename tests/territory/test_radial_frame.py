@@ -72,3 +72,21 @@ def test_mask_anchor_requires_distinct_apical_and_basal_slices():
             [0.0, 1.0, 2.0],
             deleted_slice_indices={2},
         )
+
+
+@pytest.mark.parametrize("minimum_radius, count, indices, expected", [
+    (1., 10, [0, 3, 6, 9], [1., 2., 3., 4.]),
+    (0., 13, [0, 3, 6, 9, 12], [0., 1., 2., 3., 4.]),
+])
+def test_decimal_frame_mapping_stabilizes_only_roundoff_at_aha_boundaries(
+    minimum_radius, count, indices, expected
+):
+    positions = np.arange(count) * 7.3
+    frame = build_mask_anchored_radial_frame(
+        np.ones((count, 2, 2)), positions, minimum_radius=minimum_radius
+    )
+    np.testing.assert_array_equal(frame.source_radii[indices], expected)
+    np.testing.assert_array_equal(frame.map_positions(positions[indices]), expected)
+    # A physical position meaningfully below the boundary must stay below it.
+    below = positions[indices[1]] - 1.e-8
+    assert frame.map_positions([below])[0] < expected[1]
