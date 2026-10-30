@@ -16,7 +16,6 @@ WorkflowName = Literal[
     "bullseye",
     "pipeline",
     "lge-bullseye",
-    "lge-mask-bullseye",
     "intensity-bullseye",
 ]
 
@@ -90,6 +89,7 @@ class BullseyeConfig:
 class LgeBullseyeConfig:
     lge: Path | None
     mask: Path | None
+    lge_scar_mask: Path | None = None
     angle_count: int = 360
     radial_count: int = 300
     angular_smoothing_sigma_deg: float = 1.5
@@ -102,29 +102,12 @@ class LgeBullseyeConfig:
 
 
 @dataclass(frozen=True)
-class LgeMaskBullseyeConfig:
-    lge: Path | None
-    mask: Path | None
-    lge_scar_mask: Path | None
-    angle_count: int = 360
-    radial_count: int = 300
-    angular_smoothing_sigma_deg: float = 1.5
-    radial_smoothing_sigma: float = 1.5
-    six_segment_warp: bool = True
-    reuse_saved_points: bool = False
-    landmarks_path: Path | None = None
-
-
-@dataclass(frozen=True)
 class AppConfig:
     case: CaseConfig
     short_axis: ShortAxisConfig
     bullseye: BullseyeConfig
     lge_bullseye: LgeBullseyeConfig = field(
         default_factory=lambda: LgeBullseyeConfig(lge=None, mask=None)
-    )
-    lge_mask_bullseye: LgeMaskBullseyeConfig = field(
-        default_factory=lambda: LgeMaskBullseyeConfig(lge=None, mask=None, lge_scar_mask=None)
     )
 
 
@@ -270,17 +253,14 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
             ("lge_bullseye.mask", config.lge_bullseye.mask),
         ):
             _input_error(errors, name, path)
-    elif workflow == "lge-mask-bullseye":
-        for name, path in (
-            ("lge_mask_bullseye.lge", config.lge_mask_bullseye.lge),
-            ("lge_mask_bullseye.mask", config.lge_mask_bullseye.mask),
-            ("lge_mask_bullseye.lge_scar_mask", config.lge_mask_bullseye.lge_scar_mask),
-        ):
-            _input_error(errors, name, path)
+        if config.lge_bullseye.lge_scar_mask is not None:
+            _input_error(
+                errors, "lge_bullseye.lge_scar_mask", config.lge_bullseye.lge_scar_mask
+            )
     else:
         errors.append(
             "workflow must be one of short-axis, bullseye, pipeline, "
-            "lge-bullseye, lge-mask-bullseye, intensity-bullseye; "
+            "lge-bullseye, intensity-bullseye; "
             f"got {workflow!r}"
         )
 
@@ -336,9 +316,6 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
         errors.append("bullseye.apex_territory must be 1, 2, or 3")
 
     _validate_lge_mapping_options(errors, "lge_bullseye", config.lge_bullseye)
-    _validate_lge_mapping_options(
-        errors, "lge_mask_bullseye", config.lge_mask_bullseye
-    )
     _positive_number(
         errors,
         "lge_bullseye.scar_sd_multiplier",
@@ -366,7 +343,6 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
     short_axis_data = data.get("short_axis", {})
     bullseye_data = data.get("bullseye", {})
     lge_bullseye_data = data.get("lge_bullseye", {})
-    lge_mask_bullseye_data = data.get("lge_mask_bullseye", {})
 
     config = AppConfig(
         case=CaseConfig(
@@ -445,6 +421,9 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
         lge_bullseye=LgeBullseyeConfig(
             lge=_path(lge_bullseye_data.get("lge"), base_directory),
             mask=_path(lge_bullseye_data.get("mask"), base_directory),
+            lge_scar_mask=_path(
+                lge_bullseye_data.get("lge_scar_mask"), base_directory
+            ),
             angle_count=lge_bullseye_data.get("angle_count", 360),
             radial_count=lge_bullseye_data.get("radial_count", 300),
             angular_smoothing_sigma_deg=lge_bullseye_data.get(
@@ -465,28 +444,6 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
             ),
             landmarks_path=_path(
                 lge_bullseye_data.get("landmarks_path"), base_directory
-            ),
-        ),
-        lge_mask_bullseye=LgeMaskBullseyeConfig(
-            lge=_path(lge_mask_bullseye_data.get("lge"), base_directory),
-            mask=_path(lge_mask_bullseye_data.get("mask"), base_directory),
-            lge_scar_mask=_path(
-                lge_mask_bullseye_data.get("lge_scar_mask"), base_directory
-            ),
-            angle_count=lge_mask_bullseye_data.get("angle_count", 360),
-            radial_count=lge_mask_bullseye_data.get("radial_count", 300),
-            angular_smoothing_sigma_deg=lge_mask_bullseye_data.get(
-                "angular_smoothing_sigma_deg", 1.5
-            ),
-            radial_smoothing_sigma=lge_mask_bullseye_data.get(
-                "radial_smoothing_sigma", 1.5
-            ),
-            six_segment_warp=lge_mask_bullseye_data.get("six_segment_warp", True),
-            reuse_saved_points=lge_mask_bullseye_data.get(
-                "reuse_saved_points", False
-            ),
-            landmarks_path=_path(
-                lge_mask_bullseye_data.get("landmarks_path"), base_directory
             ),
         ),
     )

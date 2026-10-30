@@ -25,7 +25,6 @@ cardiac-bullseye = "cardiac_bullseye.cli:bullseye_main"
 cardiac-intensity-bullseye = "cardiac_bullseye.cli:intensity_bullseye_main"
 cardiac-pipeline = "cardiac_bullseye.cli:pipeline_main"
 cardiac-lge-bullseye = "cardiac_bullseye.cli:lge_bullseye_main"
-cardiac-lge-mask-bullseye = "cardiac_bullseye.cli:lge_mask_bullseye_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

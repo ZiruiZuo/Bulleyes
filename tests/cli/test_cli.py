@@ -13,11 +13,6 @@ import pytest
         ("bullseye_main", "generate_bullseye", "bullseye"),
         ("pipeline_main", "run_complete_pipeline", "pipeline"),
         ("lge_bullseye_main", "generate_lge_bullseye", "lge-bullseye"),
-        (
-            "lge_mask_bullseye_main",
-            "generate_lge_mask_bullseye",
-            "lge-mask-bullseye",
-        ),
     ],
 )
 def test_command_dispatches_to_its_workflow(
@@ -143,51 +138,6 @@ def test_lge_cli_rejects_invalid_modes_before_loading(monkeypatch, options):
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("options, expected", [
-    ([], {}),
-    (["--mode", "single-reference"], {"landmark_mode": "single-reference"}),
-    (["--projection", "0-4"], {"projection": "0-4"}),
-    (["--mode", "per-slice", "--projection", "1-4"],
-     {"landmark_mode": "per-slice", "projection": "1-4"}),
-    (["--mode", "per-slice", "--projection", "0-4"],
-     {"landmark_mode": "per-slice", "projection": "0-4"}),
-    (["--mode", "single-reference", "--projection", "1-4"],
-     {"landmark_mode": "single-reference", "projection": "1-4"}),
-    (["--mode", "single-reference", "--projection", "0-4"],
-     {"landmark_mode": "single-reference", "projection": "0-4"}),
-])
-def test_external_lge_cli_forwards_annotation_and_projection(
-    monkeypatch, tmp_path, options, expected
-):
-    """Dropping either option would select a different shared mapping frame."""
-    from cardiac_bullseye import cli
-
-    config_path = tmp_path / "case.toml"
-    sentinel = object()
-    calls = []
-
-    def load(path, workflow):
-        assert path == config_path
-        assert workflow == "lge-mask-bullseye"
-        return sentinel
-
-    monkeypatch.setattr(cli, "load_config", load)
-    monkeypatch.setattr(cli, "generate_lge_mask_bullseye",
-                        lambda config, **kwargs: calls.append((config, kwargs)))
-    assert cli.lge_mask_bullseye_main(["--config", str(config_path), *options]) == 0
-    assert calls == [(sentinel, expected)]
-
-
-@pytest.mark.parametrize("options", [["--mode", "other"], ["--projection", "2-4"]])
-def test_external_lge_cli_rejects_invalid_modes(monkeypatch, options):
-    from cardiac_bullseye import cli
-
-    monkeypatch.setattr(cli, "load_config", lambda *_: pytest.fail("must not load"))
-    with pytest.raises(SystemExit) as error:
-        cli.lge_mask_bullseye_main(["--config", "case.toml", *options])
-    assert error.value.code == 2
-
-
 @pytest.mark.parametrize(
     ("entry_name", "runner_name", "workflow_name"),
     [
@@ -266,7 +216,6 @@ def test_run_handles_expected_filesystem_errors_without_a_traceback(
         "bullseye_main",
         "pipeline_main",
         "lge_bullseye_main",
-        "lge_mask_bullseye_main",
         "intensity_bullseye_main",
     ],
 )
@@ -281,7 +230,7 @@ def test_command_help_exits_successfully(entry_name, capsys):
     assert "usage:" in capsys.readouterr().out
 
 
-def test_lge_mask_bullseye_command_returns_one_on_validation_error(
+def test_lge_bullseye_command_returns_one_on_validation_error(
     monkeypatch, tmp_path, capsys
 ):
     """External-scar validation errors propagate through the public command."""
@@ -295,18 +244,26 @@ def test_lge_mask_bullseye_command_returns_one_on_validation_error(
         lambda *_args: (_ for _ in ()).throw(ValueError("scar outside myocardium")),
     )
 
-    assert cli.lge_mask_bullseye_main(["--config", str(config_path)]) == 1
+    assert cli.lge_bullseye_main(["--config", str(config_path)]) == 1
     assert "scar outside myocardium" in capsys.readouterr().err
 
 
-def test_pyproject_registers_external_scar_bullseye_command():
-    """Package metadata must expose the dedicated external-scar command."""
+def test_pyproject_registers_only_the_unified_lge_bullseye_command():
+    """Installing the package must expose the unified LGE command only."""
     pyproject = Path(__file__).parents[2] / "pyproject.toml"
     scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
 
-    assert scripts["cardiac-lge-mask-bullseye"] == (
-        "cardiac_bullseye.cli:lge_mask_bullseye_main"
+    assert scripts["cardiac-lge-bullseye"] == (
+        "cardiac_bullseye.cli:lge_bullseye_main"
     )
+    assert "cardiac-lge-mask-bullseye" not in scripts
+
+
+def test_cli_does_not_expose_the_removed_lge_mask_command_or_runner():
+    from cardiac_bullseye import cli
+
+    assert not hasattr(cli, "lge_mask_bullseye_main")
+    assert not hasattr(cli, "generate_lge_mask_bullseye")
 
 
 def test_pyproject_registers_intensity_bullseye_command():
