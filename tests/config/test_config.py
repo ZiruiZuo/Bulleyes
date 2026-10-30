@@ -1,8 +1,14 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from cardiac_bullseye.config import ConfigError, load_config, validate_config
+from cardiac_bullseye.config import (
+    ConfigError,
+    LgeBullseyeConfig,
+    load_config,
+    validate_config,
+)
 
 
 def write_config(tmp_path: Path, text: str) -> Path:
@@ -232,6 +238,34 @@ normal_roi_min_voxels = 24
     assert config.lge_bullseye.scar_sd_multiplier == 5.5
     assert config.lge_bullseye.normal_roi_min_voxels == 24
     assert config.case.output_directory == tmp_path / "results"
+
+
+@pytest.mark.parametrize("with_external_scar", [False, True])
+def test_lge_bullseye_preserves_positional_mapping_parameters(
+    tmp_path, with_external_scar
+):
+    lge = tmp_path / "lge.nii.gz"
+    mask = tmp_path / "mask.nii.gz"
+    scar = tmp_path / "scar.nii.gz"
+    for path in (lge, mask, scar):
+        path.touch()
+    config_path = write_config(
+        tmp_path,
+        """
+[lge_bullseye]
+lge = "lge.nii.gz"
+mask = "mask.nii.gz"
+""",
+    )
+    config = load_config(config_path, "lge-bullseye")
+    scar_option = {"lge_scar_mask": scar} if with_external_scar else {}
+
+    options = LgeBullseyeConfig(lge, mask, 180, 120, **scar_option)
+
+    assert options.angle_count == 180
+    assert options.radial_count == 120
+    assert options.lge_scar_mask == (scar if with_external_scar else None)
+    validate_config(replace(config, lge_bullseye=options), "lge-bullseye")
 
 
 def test_lge_bullseye_parses_optional_external_scar_mask(tmp_path):

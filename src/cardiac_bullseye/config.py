@@ -89,7 +89,6 @@ class BullseyeConfig:
 class LgeBullseyeConfig:
     lge: Path | None
     mask: Path | None
-    lge_scar_mask: Path | None = None
     angle_count: int = 360
     radial_count: int = 300
     angular_smoothing_sigma_deg: float = 1.5
@@ -99,6 +98,7 @@ class LgeBullseyeConfig:
     normal_roi_min_voxels: int = 20
     reuse_saved_points: bool = False
     landmarks_path: Path | None = None
+    lge_scar_mask: Path | None = None
 
 
 @dataclass(frozen=True)
