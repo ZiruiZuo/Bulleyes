@@ -1,0 +1,21 @@
+# 使用 cardiac-lge-bullseye --config toml/lge_bullseye.example.toml。
+# 路径相对于本文件；请替换为当前病例的数据路径。
+[case]
+id = 'patient_043'
+output_directory = '../outputs/patient_043_lge'
+
+[lge_bullseye]
+lge = '../inputs/patient_043_lge_sax.nii.gz'
+mask = '../inputs/patient_043_lge_myocardium.seg.nrrd'
+# 提供已有 scar 时只输出 landmark JSON 和两张 PNG，不打开正常 ROI 界面。
+# 删除或注释下一行，即改为交互式正常心肌 ROI 标注与 scar 计算，输出七项结果。
+lge_scar_mask = '../inputs/patient_043_lge_scar_mask.nii.gz'
+# 可选：共享同网格、裁剪后 Apex → Base 层索引的 AIP/IIP。
+# landmarks_path = '../shared/patient_043_landmarks.json'
+reuse_saved_points = false
+angle_count = 360
+radial_count = 300
+angular_smoothing_sigma_deg = 1.5
+radial_smoothing_sigma = 1.5
+six_segment_warp = true
+# 两种 scar 来源均支持 --mode per-slice|single-reference 与 --projection 1-4|0-4。

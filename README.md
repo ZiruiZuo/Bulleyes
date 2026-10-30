@@ -2,10 +2,9 @@
 
 将心脏 MR 转换为短轴堆栈，并生成患者特异性的 AHA-17 供血区牛眼图、冠脉投影和冠脉距离牛眼图。
 
-项目提供六个独立工作流/命令：只生成短轴、使用已有短轴数据生成供血区牛眼图、生成
-连续强度牛眼图、一次完成“原始 MR → 短轴 → 牛眼图”、完整 LGE 强度与 scar 牛眼图，
-以及使用已有 scar mask 的外部 scar 牛眼图。后两种 LGE 模式分别对应
-`cardiac-lge-bullseye` 和 `cardiac-lge-mask-bullseye`。
+项目提供五个独立工作流/命令：只生成短轴、使用已有短轴数据生成供血区牛眼图、生成
+连续强度牛眼图、一次完成“原始 MR → 短轴 → 牛眼图”，以及生成 LGE 强度与 scar
+牛眼图。`cardiac-lge-bullseye` 根据可选的 `lge_scar_mask` 选择交互 ROI 或外部 scar 来源。
 
 ## 目录结构
 
@@ -41,15 +40,14 @@ Set-Location .\Bulleyes
 python -m pip install -e .
 ```
 
-安装后会提供六个命令：
+安装后会提供五个命令：
 
 ```text
 cardiac-short-axis   只生成短轴
 cardiac-bullseye     只生成牛眼图
 cardiac-intensity-bullseye 由短轴 image 和心肌 mask 生成连续强度牛眼图
 cardiac-pipeline     运行完整流程
-cardiac-lge-bullseye 由短轴 LGE 和同网格心肌 mask 生成强度与 scar 牛眼图
-cardiac-lge-mask-bullseye --config <file> 由已有 scar mask 生成 LGE 牛眼图
+cardiac-lge-bullseye 由短轴 LGE、心肌 mask 和可选 scar mask 生成强度与 scar 牛眼图
 ```
 
 可以用以下命令确认安装是否成功：
@@ -60,13 +58,12 @@ cardiac-bullseye --help
 cardiac-intensity-bullseye --help
 cardiac-pipeline --help
 cardiac-lge-bullseye --help
-cardiac-lge-mask-bullseye --help
 ```
 
 ## 配置文件通用规则
 
 建议每条命令使用一份独立的 TOML 配置文件。配置文件只需要包含当前命令用到的
-section，不需要把六种流程的配置全部写在同一个文件里。
+section，不需要把五种流程的配置全部写在同一个文件里。
 
 - 每份配置都必须有 `[case]`；`case.id` 是输出文件名前缀。
 - `case.output_directory` 是结果保存目录，不存在时会自动创建。
@@ -79,8 +76,8 @@ section，不需要把六种流程的配置全部写在同一个文件里。
 
 ### 跨命令、跨输出目录共享 AIP/IIP
 
-`[bullseye]`、`[lge_bullseye]` 和 `[lge_mask_bullseye]` 都支持可选的
-`landmarks_path`。例如在三份独立 TOML 的对应 section 中都设置：
+`[bullseye]` 和 `[lge_bullseye]` 都支持可选的 `landmarks_path`，LGE 的两种 scar
+来源使用相同规则。例如在不同命令的独立 TOML 对应 section 中都设置：
 
 ```toml
 landmarks_path = 'shared/patient_043_landmarks.json'
@@ -89,7 +86,7 @@ reuse_saved_points = true
 
 该路径同样相对于各自 TOML 所在目录解析；确保解析后指向同一文件，即可让不同
 `output_directory` 共享一个 JSON。省略时，`[bullseye]` 使用输出目录中的
-`<case>_landmarks.json`，两个 LGE 命令使用 `<case>_lge_landmarks.json`。
+`<case>_landmarks.json`，LGE 命令使用 `<case>_lge_landmarks.json`。
 `reuse_saved_points = true` 且文件存在时复用 AIP/IIP、Skip/Delete 和手动质心，
 不打开标注窗口，也不改写 JSON；文件不存在时自动打开所选模式的标注窗口。
 设为 `false` 时从空白状态重新标注，成功保存时覆盖配置路径中的旧数据。
@@ -340,7 +337,7 @@ coronary_linewidth = 1.8
 不再额外覆盖中心。为避免所有角度在极坐标原点汇聚形成放射状伪影，强度命令会在
 `r<1` 内使用 smoothstep 中心融合：`r=0` 收敛为该半径的环向平均值，并平滑恢复
 角度差异，到 `r=1` 时完全保留原始插值结果。该融合仅用于
-`cardiac-intensity-bullseye` 和两个 LGE 命令。两种模式都把最后一个未 `Delete`
+`cardiac-intensity-bullseye` 和 LGE 命令的两种 scar 来源。两种投影都把最后一个未 `Delete`
 的基底层映射到 `r=4`；省略 `--projection` 时默认使用 `1-4`。
 
 开启冠脉叠加时，冠脉使用同一个径向框架：`--projection 1-4` 不绘制 `r<1` 的
@@ -410,7 +407,13 @@ patient_043_distance_world.nii.gz
 patient_043_distance_short_axis.nii.gz
 ```
 
-## 用法五：完整 LGE 流程——手动画正常心肌 ROI 并计算 scar
+## 用法五：cardiac-lge-bullseye——交互 ROI 或外部 scar mask
+
+两种 scar 来源统一使用 `cardiac-lge-bullseye` 和 `[lge_bullseye]`：省略
+`lge_scar_mask` 时手动画正常心肌 ROI 并计算 scar；提供该字段时直接使用已有 scar。
+旧的独立外部 scar 命令、配置节和公开 Python API 已移除，不提供兼容别名；现有调用
+需改用本节的统一入口。Python 配置类型为 `LgeBullseyeConfig`，工作流为
+`generate_lge_bullseye`。
 
 命令：
 
@@ -427,6 +430,11 @@ cardiac-lge-bullseye --config .\case_lge.toml --mode single-reference --projecti
 - Apex → Base 排列的短轴 LGE。
 - 直接在该 LGE 网格上标注的心肌 mask；支持标量 NIfTI/NRRD 和 vector `.seg.nrrd`。
 - LGE 与心肌 mask 的 size、spacing、origin 和 direction 必须一致；程序不会自动重采样。
+- 可选：由独立工具生成的二值 scar mask；其 size、spacing、origin 和 direction
+  也必须与 LGE 一致，且 scar 必须完全位于心肌内。这些检查在打开 AIP/IIP 窗口前
+  完成；外部 scar 不会被重采样。
+
+对于 vector/component `.seg.nrrd`，任一 component 非零即视为心肌。
 
 `case_lge.toml`：
 
@@ -438,6 +446,8 @@ output_directory = 'outputs/patient_043_lge'
 [lge_bullseye]
 lge = 'inputs/patient_043_lge_sax.nii.gz'
 mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
+# 可选：取消注释即使用外部 scar，跳过正常 ROI 界面和 scar 计算。
+# lge_scar_mask = 'inputs/patient_043_lge_scar_mask.nii.gz'
 # 可选：跨输出目录共享 AIP/IIP。
 # landmarks_path = 'shared/patient_043_landmarks.json'
 
@@ -447,27 +457,32 @@ radial_count = 300
 angular_smoothing_sigma_deg = 1.5
 radial_smoothing_sigma = 1.5
 six_segment_warp = true
-scar_sd_multiplier = 5.0
-normal_roi_min_voxels = 20
+scar_sd_multiplier = 5.0  # 仅交互 ROI 来源使用
+normal_roi_min_voxels = 20  # 仅交互 ROI 来源使用
 reuse_saved_points = false
 ```
 
-流程分为两步：
+聚焦示例 [`toml/lge_bullseye.example.toml`](toml/lge_bullseye.example.toml)
+已启用 `lge_scar_mask`；删除或注释该行即可进入交互 ROI 流程。
 
-1. 根据 `--mode` 逐层选择 AIP/IIP，或选择一个参考层后按各层质心传播方向。
-   可缩放和平移，也可使用 `Skip` 或从基底端连续 `Delete`。
-   绿色 `+` 为自动质心，可直接拖动修正；在 `Skip` 前完成的质心修正仍会保存。
-2. 在每个保留层用画刷选择远端正常心肌 ROI。ROI 自动与心肌 mask 求交；少于
-   `normal_roi_min_voxels` 个有效体素时会提示。程序逐层使用
-   `mean + scar_sd_multiplier × sample SD` 计算 scar 阈值（样本标准差，`ddof=1`），
-   只有严格大于阈值的心肌体素才算 scar，等于阈值不计入。
+两种来源都先根据 `--mode` 准备 AIP/IIP，可逐层标注，或选择一个参考层后按各层
+质心传播方向。窗口支持缩放、平移、`Skip` 和从基底端连续 `Delete`，绿色 `+`
+可拖动修正，`Skip` 保留手动质心。闭合心肌层使用 LV 心腔质心；不闭合层使用
+最近闭合层的中心，距离相同时优先靠基底层。整套非空心肌都没有闭合心腔时会报错。
+
+未提供 `lge_scar_mask` 时，随后执行交互 ROI 流程：
+
+在每个保留层用画刷选择远端正常心肌 ROI。ROI 自动与心肌 mask 求交；少于
+`normal_roi_min_voxels` 个有效体素时会提示。程序逐层使用
+`mean + scar_sd_multiplier × sample SD` 计算 scar 阈值（样本标准差，`ddof=1`），
+只有严格大于阈值的心肌体素才算 scar，等于阈值不计入。
 
 默认每次运行都会忽略以前的 landmark 和 ROI 标注，从空白状态重新选择。
 设置 `reuse_saved_points = true` 后，按上述共享路径规则优先复用 landmark；
 正常心肌 ROI 仍然每次重新选择，旧的 ROI JSON 缓存不会复用。
 LGE 强度图和 scar 分段采用与 Territory 相同的逐层几何中心和共享径向框架。
 
-输出：
+交互 ROI 来源输出七项结果：
 
 ```text
 patient_043_lge_landmarks.json
@@ -482,80 +497,8 @@ patient_043_lge_scar_bullseye.png
 scar 牛眼图使用原始体素比例；0% 为白色，比例越高越趋向橙红色。
 PNG 使用安全覆盖逻辑，scar NIfTI 保留原 LGE 的完整物理网格。
 
-两个 LGE 命令都接受 `--mode per-slice|single-reference` 与
-`--projection 1-4|0-4`，可任意组合；省略时分别为 `per-slice` 和 `1-4`，
-原来仅传 `--config` 的调用仍有效。它们以裁剪后第一张含心肌 mask 的层为心尖锚点，
-以最后一个未 Delete 基底层为基底锚点；强度插值与原生 scar AHA 分段使用完全相同
-的源层半径。Skip 不移动锚点：强度通过相邻有效层插值，scar 仍统计该层原生体素，
-其角度参考由相邻有效 AIP/IIP 插值得到。
-
-- `1-4`：心尖锚点为 `r=1`、基底为 `r=4`，测量 AHA 1–16；完整 LGE 的
-  强度中心使用心尖层心肌平均值，scar 中心为 `N/A`，CSV 只有16行。
-  外部 scar 命令中心保持空白，不绘制或标注第17节段。
-- `0-4`：心尖锚点为 `r=0`、基底为 `r=4`。准确边界为
-  `0 <= r < 1` 属第17节段，`1 <= r < 2` 属13–16，
-  `2 <= r < 3` 属7–12，`3 <= r <= 4` 属1–6。
-  第17节段 scar 百分比为该范围内汇总的原生 scar 体素数 / 原生心肌体素数 × 100，
-  不是各层百分比的平均值，也不是插值图像的像素比例；其中心按测量值着色和标注，
-  无心肌体素时显示 `N/A`。完整 LGE 的 CSV 包含17行。
-  连续强度绘制到原点，在 `r<1` 内按 smoothstep 融合到每个半径的环向均值：
-  原点无角度差异，到 `r=1` 完全恢复插值强度；不覆盖额外的统一中心圆。
-
-## 用法六：使用已有 scar mask 生成 LGE 牛眼图
-
-这条命令适用于 scar mask 已由独立 `lgeMask` 工具或其他方法生成的情况。它不会
-再次选择正常心肌 ROI，也不会重新计算 scar。
-
-命令：
-
-```powershell
-cardiac-lge-mask-bullseye --config .\case_lge_mask.toml
-cardiac-lge-mask-bullseye --config .\case_lge_mask.toml --mode per-slice --projection 1-4
-cardiac-lge-mask-bullseye --config .\case_lge_mask.toml --mode single-reference --projection 0-4
-```
-
-需要的数据：
-
-- Apex → Base 排列的短轴 LGE。
-- 心肌 mask。
-- 已有的二值 scar mask。
-- 三份数据的 size、spacing、origin 和 direction 必须完全一致；程序不会重采样。
-- scar 必须完全位于心肌内，否则程序在打开标注窗口前报错。
-
-心肌 mask 支持标量 NIfTI、标量 NRRD 和 vector/component `.seg.nrrd`；对于
-`.seg.nrrd`，任一 component 非零即视为心肌。
-
-`case_lge_mask.toml`：
-
-```toml
-[case]
-id = 'patient_043'
-output_directory = 'outputs/patient_043_lge_mask_bullseye'
-
-[lge_mask_bullseye]
-lge = 'inputs/patient_043_lge_sax.nii.gz'
-mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
-lge_scar_mask = 'inputs/patient_043_lge_scar_mask.nii.gz'
-# 可选：与完整 LGE、Territory 或强度命令共享同网格 landmark。
-# landmarks_path = 'shared/patient_043_landmarks.json'
-
-# 以下均为可选参数，右侧是默认值。
-angle_count = 360
-radial_count = 300
-angular_smoothing_sigma_deg = 1.5
-radial_smoothing_sigma = 1.5
-six_segment_warp = true
-reuse_saved_points = false
-```
-
-程序只需要准备 AIP/IIP；不会进入正常心肌 ROI 界面。默认 `1-4` 计算并显示
-AHA 1–16，中心空白；`0-4` 还测量、着色并标注第17节段，强度连续绘制到原点。
-选择 AIP/IIP 时同样会先显示自动质心；可拖动绿色 `+` 修正，并可在修正后点击
-`Skip` 保留该层手动质心。
-设置 `reuse_saved_points = true` 后按共享路径规则优先读取已保存标注；缺失时仍会
-打开所选模式的窗口。本模式同样对不闭合心肌层使用最近闭合层的 LV 心腔质心。
-
-输出恰好为：
+提供 `lge_scar_mask` 时，程序验证外部 scar 后只准备 AIP/IIP，不进入正常心肌 ROI
+界面，也不重新计算 scar。此时恰好有三个逻辑输出：
 
 ```text
 patient_043_lge_landmarks.json
@@ -563,7 +506,29 @@ patient_043_lge_intensity_bullseye.png
 patient_043_lge_scar_bullseye.png
 ```
 
-该命令不会生成 NPZ、CSV、ROI JSON，也不会复制输入 scar mask。
+其中 landmark 使用配置的共享路径或上述默认路径；复用时直接引用已有 JSON。
+外部来源不生成 NPZ、CSV、正常 ROI JSON，也不复制输入 scar mask；输出目录中
+以前交互运行留下的这些文件会保持原样，不会被覆盖或删除。因此目录内的历史文件
+不代表本次运行生成了额外结果。
+
+两种 scar 来源都接受 `--mode per-slice|single-reference` 与
+`--projection 1-4|0-4`，可任意组合；省略时分别为 `per-slice` 和 `1-4`，
+仅传 `--config` 的调用仍有效。它们以裁剪后第一张含心肌 mask 的层为心尖锚点，
+以最后一个未 Delete 基底层为基底锚点；强度插值与原生 scar AHA 分段使用完全相同
+的源层半径。Skip 不移动锚点：强度通过相邻有效层插值，scar 仍统计该层原生体素，
+其角度参考由相邻有效 AIP/IIP 插值得到。
+
+- `1-4`：心尖锚点为 `r=1`、基底为 `r=4`，测量 AHA 1–16；交互 ROI 来源的
+  强度中心使用心尖层心肌平均值，scar 中心为 `N/A`，CSV 只有16行。
+  外部 scar 来源的 scar 中心保持空白，不绘制或标注第17节段。
+- `0-4`：心尖锚点为 `r=0`、基底为 `r=4`。准确边界为
+  `0 <= r < 1` 属第17节段，`1 <= r < 2` 属13–16，
+  `2 <= r < 3` 属7–12，`3 <= r <= 4` 属1–6。
+  第17节段 scar 百分比为该范围内汇总的原生 scar 体素数 / 原生心肌体素数 × 100，
+  不是各层百分比的平均值，也不是插值图像的像素比例；其中心按测量值着色和标注，
+  无心肌体素时显示 `N/A`。交互 ROI 来源的 CSV 包含17行。
+  连续强度绘制到原点，在 `r<1` 内按 smoothstep 融合到每个半径的环向均值：
+  原点无角度差异，到 `r=1` 完全恢复插值强度；不覆盖额外的统一中心圆。
 
 ## Python 调用
 
@@ -574,7 +539,7 @@ from cardiac_bullseye.config import load_config
 from cardiac_bullseye.workflows import (
     generate_bullseye,
     generate_lge_bullseye,
-    generate_lge_mask_bullseye,
+    generate_intensity_bullseye,
     generate_short_axis,
     run_complete_pipeline,
 )
@@ -585,16 +550,18 @@ short_axis_outputs = generate_short_axis(short_axis_config)
 bullseye_config = load_config("case.toml", "bullseye")
 bullseye_outputs = generate_bullseye(bullseye_config)
 
+intensity_config = load_config("case_intensity.toml", "intensity-bullseye")
+intensity_outputs = generate_intensity_bullseye(intensity_config)
+
 pipeline_config = load_config("case.toml", "pipeline")
 pipeline_outputs = run_complete_pipeline(pipeline_config)
 
 lge_config = load_config("case_lge.toml", "lge-bullseye")
-lge_outputs = generate_lge_bullseye(lge_config)
-
-lge_mask_config = load_config("case_lge_mask.toml", "lge-mask-bullseye")
-lge_mask_outputs = generate_lge_mask_bullseye(
-    lge_mask_config, landmark_mode="single-reference", projection="0-4"
+lge_outputs = generate_lge_bullseye(
+    lge_config, landmark_mode="single-reference", projection="0-4"
 )
+# 同一 API 根据 lge_config.lge_bullseye.lge_scar_mask 是否提供选择 scar 来源。
+# 外部来源时 numeric_data/reference_rois/scar_mask/scar_segments 均为 None。
 ```
 
 ## 数据约定

@@ -253,17 +253,20 @@ def test_pyproject_registers_only_the_unified_lge_bullseye_command():
     pyproject = Path(__file__).parents[2] / "pyproject.toml"
     scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
 
-    assert scripts["cardiac-lge-bullseye"] == (
-        "cardiac_bullseye.cli:lge_bullseye_main"
-    )
-    assert "cardiac-lge-mask-bullseye" not in scripts
+    assert {name: target for name, target in scripts.items() if "lge" in name} == {
+        "cardiac-lge-bullseye": "cardiac_bullseye.cli:lge_bullseye_main"
+    }
 
 
-def test_cli_does_not_expose_the_removed_lge_mask_command_or_runner():
+def test_cli_exposes_only_the_unified_lge_command_and_runner():
     from cardiac_bullseye import cli
 
-    assert not hasattr(cli, "lge_mask_bullseye_main")
-    assert not hasattr(cli, "generate_lge_mask_bullseye")
+    assert {name for name in vars(cli) if name.startswith("lge_")} == {
+        "lge_bullseye_main"
+    }
+    assert {name for name in vars(cli) if name.startswith("generate_lge")} == {
+        "generate_lge_bullseye"
+    }
 
 
 def test_pyproject_registers_intensity_bullseye_command():

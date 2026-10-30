@@ -324,7 +324,7 @@ mask = "missing_myocardium.nii.gz"
 
 
 @pytest.mark.parametrize("surface", ["loader", "validation"])
-def test_removed_lge_mask_section_is_not_a_workflow(tmp_path, surface):
+def test_unknown_workflow_is_rejected(tmp_path, surface):
     source = tmp_path / "source.nii.gz"
     source.touch()
     config_path = write_config(
@@ -332,18 +332,14 @@ def test_removed_lge_mask_section_is_not_a_workflow(tmp_path, surface):
         """
 [short_axis]
 source_mr = "source.nii.gz"
-[lge_mask_bullseye]
-lge = "source.nii.gz"
-mask = "source.nii.gz"
-lge_scar_mask = "source.nii.gz"
 """,
     )
 
     with pytest.raises(ConfigError, match="workflow must be one of"):
         if surface == "loader":
-            load_config(config_path, "lge-mask-bullseye")
+            load_config(config_path, "unknown-workflow")
         else:
-            validate_config(load_config(config_path, "short-axis"), "lge-mask-bullseye")
+            validate_config(load_config(config_path, "short-axis"), "unknown-workflow")
 
 
 @pytest.mark.parametrize("requires_scar", [False, True])
