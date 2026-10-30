@@ -1,10 +1,7 @@
 # Cardiac Bullseye
 
 将心脏 MR 转换为短轴堆栈，并生成患者特异性的 AHA-17 供血区牛眼图、冠脉投影和冠脉距离牛眼图。
-
-项目提供四个相互独立的命令。程序不再提供把短轴规划和 Territory 牛眼图串联起来的
-组合命令；需要完整 Territory 流程时，先运行 `cardiac-short-axis`，再运行
-`cardiac-bullseye`。
+同时支持生成连续强度牛眼图和LGE牛眼图
 
 ## 四个命令概览
 
