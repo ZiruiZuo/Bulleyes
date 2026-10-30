@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import matplotlib
 from dataclasses import fields, replace
 import json
+
+import matplotlib
 
 matplotlib.use("Agg")
 
@@ -13,7 +14,7 @@ import SimpleITK as sitk
 from cardiac_bullseye.config import load_config
 from cardiac_bullseye.territory.io import save_landmarks_json
 from cardiac_bullseye.territory.models import LandmarkPair
-from cardiac_bullseye.workflows import generate_lge_mask_bullseye
+from cardiac_bullseye.workflows import generate_lge_bullseye
 
 
 def _write_external_scar_case(tmp_path, *, scar_foreground: bool):
@@ -50,7 +51,7 @@ def _write_external_scar_case(tmp_path, *, scar_foreground: bool):
 [case]
 id = "032602"
 output_directory = "results"
-[lge_mask_bullseye]
+[lge_bullseye]
 lge = '{lge_path.as_posix()}'
 mask = '{myocardium_path.as_posix()}'
 lge_scar_mask = '{scar_path.as_posix()}'
@@ -62,7 +63,7 @@ six_segment_warp = false
 """,
         encoding="utf-8",
     )
-    return load_config(config_path, "lge-mask-bullseye")
+    return load_config(config_path, "lge-bullseye")
 
 
 def _fake_fresh_landmarks(study, output_path, *, resume_existing, cancel_is_error,
@@ -79,29 +80,33 @@ def _forbidden(*_args, **_kwargs):
     raise AssertionError("external-scar workflow must not select ROIs or compute scar")
 
 
-def test_external_scar_workflow_writes_only_three_outputs(monkeypatch, tmp_path):
+@pytest.fixture(autouse=True)
+def forbid_interactive_scar_calculation(monkeypatch):
+    """External runs must never open the normal-ROI UI or estimate scar."""
+    monkeypatch.setattr(
+        "cardiac_bullseye.workflows.lge.select_reference_rois_interactively", _forbidden,
+    )
+    monkeypatch.setattr("cardiac_bullseye.workflows.lge.compute_lge_scar", _forbidden)
+
+
+def test_external_scar_branch_writes_exactly_three_outputs(monkeypatch, tmp_path):
     """Replacing this with the ROI/scar workflow must fail this test."""
     config = _write_external_scar_case(tmp_path, scar_foreground=True)
     monkeypatch.setattr(
         "cardiac_bullseye.workflows.bullseye_frame.select_landmarks_interactively",
         _fake_fresh_landmarks,
     )
-    monkeypatch.setattr(
-        "cardiac_bullseye.workflows.lge.select_reference_rois_interactively",
-        _forbidden,
-    )
-    monkeypatch.setattr(
-        "cardiac_bullseye.workflows.lge.compute_lge_scar",
-        _forbidden,
-    )
+    outputs = generate_lge_bullseye(config)
 
-    outputs = generate_lge_mask_bullseye(config)
-
+    assert outputs.numeric_data is None
+    assert outputs.reference_rois is None
+    assert outputs.scar_mask is None
+    assert outputs.scar_segments is None
     assert outputs.landmarks.name == "032602_lge_landmarks.json"
-    assert outputs.intensity_figure.name == "032602_lge_intensity_bullseye.png"
+    assert outputs.figure.name == "032602_lge_intensity_bullseye.png"
     assert outputs.scar_figure.name == "032602_lge_scar_bullseye.png"
     assert outputs.landmarks.is_file()
-    assert outputs.intensity_figure.stat().st_size > 0
+    assert outputs.figure.stat().st_size > 0
     assert outputs.scar_figure.stat().st_size > 0
     assert {path.name for path in config.case.output_directory.iterdir()} == {
         "032602_lge_landmarks.json",
@@ -110,8 +115,66 @@ def test_external_scar_workflow_writes_only_three_outputs(monkeypatch, tmp_path)
     }
 
 
+def test_external_scar_branch_leaves_preexisting_interactive_outputs_untouched(
+    monkeypatch, tmp_path
+):
+    """Cleaning or regenerating interactive artifacts would corrupt these sentinels."""
+    config = _write_external_scar_case(tmp_path, scar_foreground=True)
+    config.case.output_directory.mkdir()
+    sentinels = {}
+    for basename in (
+        "lge_intensity_bullseye.npz", "lge_normal_rois.json",
+        "lge_scar_mask.nii.gz", "lge_scar_segments.csv", "unrelated.txt",
+    ):
+        path = config.case.output_path(basename)
+        path.write_bytes(f"previous {basename}".encode())
+        sentinels[path] = (path.read_bytes(), path.stat().st_mtime_ns)
+    monkeypatch.setattr(
+        "cardiac_bullseye.workflows.bullseye_frame.select_landmarks_interactively",
+        _fake_fresh_landmarks,
+    )
+    generate_lge_bullseye(config)
+
+    for path, (content, modified) in sentinels.items():
+        assert path.read_bytes() == content
+        assert path.stat().st_mtime_ns == modified
+
+
+@pytest.mark.parametrize("problem, match", [
+    ("grid", "scar mask spacing differ"), ("outside", "outside the myocardium"),
+])
+def test_external_scar_is_validated_before_landmark_annotation(
+    monkeypatch, tmp_path, problem, match
+):
+    """Opening annotation before validating the external mask would hit the guard."""
+    config = _write_external_scar_case(tmp_path, scar_foreground=True)
+    path = config.lge_bullseye.lge_scar_mask
+    image = sitk.ReadImage(str(path))
+    if problem == "grid":
+        image.SetSpacing((2., 1., 6.))
+    else:
+        array = sitk.GetArrayFromImage(image)
+        array[0, 0, 0] = 1
+        invalid = sitk.GetImageFromArray(array)
+        invalid.CopyInformation(image)
+        image = invalid
+    sitk.WriteImage(image, str(path))
+    original = path.read_bytes()
+    for selector in ("select_landmarks_interactively", "select_single_reference_interactively"):
+        monkeypatch.setattr(
+            "cardiac_bullseye.workflows.bullseye_frame." + selector,
+            lambda *_args, **_kwargs: pytest.fail("annotation must not open"),
+        )
+
+    with pytest.raises(ValueError, match=match):
+        generate_lge_bullseye(config)
+
+    assert path.read_bytes() == original
+    assert not list(config.case.output_directory.glob("*"))
+
+
 def test_external_scar_workflow_passes_saved_manual_centers(monkeypatch, tmp_path):
-    from cardiac_bullseye.workflows import lge_mask_bullseye as module
+    from cardiac_bullseye.workflows import lge as module
 
     config = _write_external_scar_case(tmp_path, scar_foreground=True)
     manual_centers = [(14.0, 12.0), None, (10.0, 12.0)]
@@ -143,7 +206,7 @@ def test_external_scar_workflow_passes_saved_manual_centers(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(module, "compute_lge_bullseye_products", capture_centers)
 
-    generate_lge_mask_bullseye(config)
+    generate_lge_bullseye(config)
 
     assert captured["centers"] == manual_centers
 
@@ -152,8 +215,8 @@ def test_external_scar_workflow_reuses_landmarks_without_ui(monkeypatch, tmp_pat
     config = _write_external_scar_case(tmp_path, scar_foreground=True)
     config = replace(
         config,
-        lge_mask_bullseye=replace(
-            config.lge_mask_bullseye,
+        lge_bullseye=replace(
+            config.lge_bullseye,
             reuse_saved_points=True,
         ),
     )
@@ -171,9 +234,9 @@ def test_external_scar_workflow_reuses_landmarks_without_ui(monkeypatch, tmp_pat
         ),
     )
 
-    outputs = generate_lge_mask_bullseye(config)
+    outputs = generate_lge_bullseye(config)
 
-    assert outputs.intensity_figure.is_file()
+    assert outputs.figure.is_file()
     assert outputs.scar_figure.is_file()
 
 
@@ -185,14 +248,14 @@ def test_external_scar_workflow_allows_an_empty_scar_mask(monkeypatch, tmp_path)
         _fake_fresh_landmarks,
     )
 
-    outputs = generate_lge_mask_bullseye(config)
+    outputs = generate_lge_bullseye(config)
 
     assert {path.name for path in config.case.output_directory.iterdir()} == {
         outputs.landmarks.name,
-        outputs.intensity_figure.name,
+        outputs.figure.name,
         outputs.scar_figure.name,
     }
-    assert outputs.intensity_figure.stat().st_size > 0
+    assert outputs.figure.stat().st_size > 0
     assert outputs.scar_figure.stat().st_size > 0
 
 
@@ -218,7 +281,7 @@ def test_external_intensity_contains_only_aha16_data_and_rendered_labels(
 
     monkeypatch.setattr(lge_common, "plot_lge_bullseye", capture_real_plot)
 
-    outputs = generate_lge_mask_bullseye(config)
+    outputs = generate_lge_bullseye(config)
 
     result, axis = rendered[0]
     assert {text.get_text() for text in axis.texts} == {
@@ -229,7 +292,7 @@ def test_external_intensity_contains_only_aha16_data_and_rendered_labels(
     np.testing.assert_allclose(
         axis.collections[0].get_array().reshape(9, 24), result.intensity
     )
-    assert outputs.intensity_figure.stat().st_size > 0
+    assert outputs.figure.stat().st_size > 0
 
 
 def test_external_scar_figure_contains_only_aha16_data_and_rendered_labels(
@@ -254,7 +317,7 @@ def test_external_scar_figure_contains_only_aha16_data_and_rendered_labels(
 
     monkeypatch.setattr(lge_common, "plot_lge_scar_bullseye", capture_real_plot)
 
-    outputs = generate_lge_mask_bullseye(config)
+    outputs = generate_lge_bullseye(config)
 
     axis = rendered[0]
     assert {text.get_text().splitlines()[0] for text in axis.texts} == {
@@ -266,7 +329,7 @@ def test_external_scar_figure_contains_only_aha16_data_and_rendered_labels(
 
 
 @pytest.mark.parametrize("mode", ["per-slice", "single-reference"])
-def test_external_workflow_cancellation_preserves_existing_and_missing_pngs(
+def test_external_scar_landmark_cancel_is_an_error(
     monkeypatch, tmp_path, mode
 ):
     """Rendering before cancellation would overwrite or create a figure."""
@@ -288,7 +351,7 @@ def test_external_workflow_cancellation_preserves_existing_and_missing_pngs(
     )
 
     with pytest.raises(RuntimeError, match=r"^AIP/IIP annotation was cancelled$"):
-        generate_lge_mask_bullseye(config, landmark_mode=mode)
+        generate_lge_bullseye(config, landmark_mode=mode)
 
     assert intensity_path.read_bytes() == b"previous intensity figure"
     assert not scar_path.exists()
@@ -321,7 +384,7 @@ def _write_shared_external_case(tmp_path, *, slice_count=5):
 [case]
 id = "shared"
 output_directory = "results"
-[lge_mask_bullseye]
+[lge_bullseye]
 lge = "lge.nii.gz"
 mask = "mask.nii.gz"
 lge_scar_mask = "scar.nii.gz"
@@ -333,7 +396,7 @@ angular_smoothing_sigma_deg = 0.0
 radial_smoothing_sigma = 0.0
 six_segment_warp = false
 ''', encoding="utf-8")
-    return load_config(config_path, "lge-mask-bullseye"), ring.T
+    return load_config(config_path, "lge-bullseye"), ring.T
 
 
 def _no_annotation(*_args, **_kwargs):
@@ -345,14 +408,14 @@ def _no_annotation(*_args, **_kwargs):
     ("1-4", [1., 1.75, 2.5, 3.25, 4.], 16),
     ("0-4", [0., 1., 2., 3., 4.], 17),
 ])
-def test_external_shared_frame_and_segment17_presentation(
+def test_external_scar_branch_forwards_shared_frame(
     monkeypatch, tmp_path, mode, projection, radii, segment_count
 ):
     """A private landmark path or separate scar radius must break this test."""
-    from cardiac_bullseye.workflows import lge_mask_bullseye as module, lge_common
+    from cardiac_bullseye.workflows import lge as module, lge_common
 
     config, ring = _write_shared_external_case(tmp_path)
-    path = config.lge_mask_bullseye.landmarks_path
+    path = config.lge_bullseye.landmarks_path
     centers = [(12., 14.)] * 5
     save_landmarks_json(path, [SHARED_PAIR] * 5, image_shape=(5, 29, 25),
                         center_overrides=centers)
@@ -368,6 +431,7 @@ def test_external_shared_frame_and_segment17_presentation(
         np.testing.assert_allclose(kwargs["source_radii"], radii)
         assert kwargs["minimum_radius"] == radii[0]
         assert kwargs["center_overrides"] == centers
+        assert kwargs["deleted_slice_indices"] == set()
         products = real_compute(study, landmarks, *args, **kwargs)
         captured["products"] = products
         return products
@@ -385,13 +449,18 @@ def test_external_shared_frame_and_segment17_presentation(
     monkeypatch.setattr(lge_common, "plot_lge_scar_bullseye",
                         capture_plot("scar_axis", lge_common.plot_lge_scar_bullseye))
 
-    outputs = generate_lge_mask_bullseye(config, landmark_mode=mode, projection=projection)
+    outputs = generate_lge_bullseye(config, landmark_mode=mode, projection=projection)
 
     assert outputs.landmarks == path
     assert path.read_bytes() == saved
-    assert {field.name for field in fields(outputs)} == {
-        "landmarks", "intensity_figure", "scar_figure"
-    }
+    assert outputs.numeric_data is None
+    assert outputs.reference_rois is None
+    assert outputs.scar_mask is None
+    assert outputs.scar_segments is None
+    assert [field.name for field in fields(outputs)] == [
+        "landmarks", "numeric_data", "figure", "reference_rois",
+        "scar_mask", "scar_segments", "scar_figure",
+    ]
     assert {file.name for file in config.case.output_directory.iterdir()} == {
         "shared_lge_intensity_bullseye.png", "shared_lge_scar_bullseye.png"
     }
@@ -434,12 +503,12 @@ def test_external_missing_shared_fallback_and_fresh_overwrite(
     monkeypatch, tmp_path, reuse, mode
 ):
     """Ignoring missing reuse or resuming old points would retain stale content."""
-    from cardiac_bullseye.workflows import lge_mask_bullseye as module
+    from cardiac_bullseye.workflows import lge as module
 
     config, ring = _write_shared_external_case(tmp_path)
-    config = replace(config, lge_mask_bullseye=replace(
-        config.lge_mask_bullseye, reuse_saved_points=reuse))
-    path = config.lge_mask_bullseye.landmarks_path
+    config = replace(config, lge_bullseye=replace(
+        config.lge_bullseye, reuse_saved_points=reuse))
+    path = config.lge_bullseye.landmarks_path
     if not reuse:
         path.write_text("stale points", encoding="utf-8")
     centers = [None, (13., 14.), None, None, None]
@@ -474,7 +543,7 @@ def test_external_missing_shared_fallback_and_fresh_overwrite(
         return product
 
     monkeypatch.setattr(module, "compute_lge_bullseye_products", compute)
-    assert generate_lge_mask_bullseye(config, landmark_mode=mode).landmarks == path
+    assert generate_lge_bullseye(config, landmark_mode=mode).landmarks == path
     assert json.loads(path.read_text())["slices"][0]["aip"] == [12., 7.]
     assert products[0].scar.scar_voxel_counts.sum() == 4
     assert products[0].scar.myocardial_voxel_counts.sum() == 4 * ring.sum()
@@ -484,7 +553,7 @@ def test_external_missing_shared_fallback_and_fresh_overwrite(
 def test_external_legacy_lge_coordinates_migrate_only_at_default_path(
     monkeypatch, tmp_path, explicit
 ):
-    from cardiac_bullseye.workflows import lge_mask_bullseye as module
+    from cardiac_bullseye.workflows import lge as module
 
     config, _ring = _write_shared_external_case(tmp_path)
     path = config.case.output_path("lge_landmarks.json")
@@ -492,8 +561,8 @@ def test_external_legacy_lge_coordinates_migrate_only_at_default_path(
     path.write_text(json.dumps({"image_shape": [5, 25, 29], "slices": [
         {"aip": [7., 12.], "iip": [21., 12.], "center": [14., 12.]}
     ] * 5}))
-    config = replace(config, lge_mask_bullseye=replace(
-        config.lge_mask_bullseye, landmarks_path=path if explicit else None))
+    config = replace(config, lge_bullseye=replace(
+        config.lge_bullseye, landmarks_path=path if explicit else None))
     real_compute = module.compute_lge_bullseye_products
 
     def compute(study, landmarks, *args, **kwargs):
@@ -504,9 +573,9 @@ def test_external_legacy_lge_coordinates_migrate_only_at_default_path(
     monkeypatch.setattr(module, "compute_lge_bullseye_products", compute)
     if explicit:
         with pytest.raises(ValueError, match="Ambiguous unversioned"):
-            generate_lge_mask_bullseye(config)
+            generate_lge_bullseye(config)
     else:
-        assert generate_lge_mask_bullseye(config).landmarks == path
+        assert generate_lge_bullseye(config).landmarks == path
 
 
 @pytest.mark.parametrize("problem, match", [
@@ -519,7 +588,7 @@ def test_external_invalid_shared_frame_fails_before_mapping(
     config, _ring = _write_shared_external_case(
         tmp_path, slice_count=1 if problem == "one-slice" else 5)
     count = 1 if problem == "one-slice" else 5
-    path = config.lge_mask_bullseye.landmarks_path
+    path = config.lge_bullseye.landmarks_path
     save_landmarks_json(path, [SHARED_PAIR] * count, image_shape=(count, 29, 25))
     payload = json.loads(path.read_text())
     if problem == "shape":
@@ -530,7 +599,7 @@ def test_external_invalid_shared_frame_fails_before_mapping(
         payload["slices"][2] = {"status": "deleted"}
     path.write_text(json.dumps(payload))
     monkeypatch.setattr(
-        "cardiac_bullseye.workflows.lge_mask_bullseye.compute_lge_bullseye_products",
+        "cardiac_bullseye.workflows.lge.compute_lge_bullseye_products",
         lambda *_args, **_kwargs: pytest.fail("mapping must not start"))
     with pytest.raises(ValueError, match=match):
-        generate_lge_mask_bullseye(config, projection="0-4")
+        generate_lge_bullseye(config, projection="0-4")

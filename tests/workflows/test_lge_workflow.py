@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import numpy as np
 import pytest
@@ -91,6 +91,12 @@ normal_roi_min_voxels = 20
 
     outputs = generate_lge_bullseye(config)
 
+    assert config.lge_bullseye.lge_scar_mask is None
+    assert [field.name for field in fields(outputs)] == [
+        "landmarks", "numeric_data", "figure", "reference_rois",
+        "scar_mask", "scar_segments", "scar_figure",
+    ]
+    assert all(getattr(outputs, field.name).is_file() for field in fields(outputs))
     assert outputs.landmarks.name == "020501_lge_landmarks.json"
     assert outputs.numeric_data.name == "020501_lge_intensity_bullseye.npz"
     assert outputs.figure.name == "020501_lge_intensity_bullseye.png"
@@ -124,6 +130,16 @@ normal_roi_min_voxels = 20
         config,
         lge_bullseye=replace(config.lge_bullseye, reuse_saved_points=True),
     )
+    reference_roi_selections = []
+
+    def redraw_reference_rois(*args, **kwargs):
+        reference_roi_selections.append(True)
+        return select_fresh_reference_rois(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "cardiac_bullseye.workflows.lge.select_reference_rois_interactively",
+        redraw_reference_rois,
+    )
     monkeypatch.setattr(
         "cardiac_bullseye.workflows.bullseye_frame.select_landmarks_interactively",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -132,6 +148,7 @@ normal_roi_min_voxels = 20
     )
     reused_outputs = generate_lge_bullseye(reused_config)
     assert reused_outputs.figure.is_file()
+    assert reference_roi_selections == [True]
 
 
 PAIR = LandmarkPair(aip=(12.0, 7.0), iip=(12.0, 21.0))
