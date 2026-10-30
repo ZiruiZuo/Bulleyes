@@ -1,7 +1,6 @@
 """Public workflow APIs."""
 
 from .bullseye import BullseyeOutputs, generate_bullseye
-from .complete import run_complete_pipeline
 from .intensity_bullseye import (
     IntensityBullseyeOutputs,
     generate_intensity_bullseye,
@@ -18,5 +17,4 @@ __all__ = [
     "generate_bullseye",
     "generate_lge_bullseye",
     "generate_intensity_bullseye",
-    "run_complete_pipeline",
 ]

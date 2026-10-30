@@ -11,7 +11,6 @@ from .workflows import (
     generate_intensity_bullseye,
     generate_lge_bullseye,
     generate_short_axis,
-    run_complete_pipeline,
 )
 
 
@@ -124,11 +123,6 @@ def intensity_bullseye_main(argv: Sequence[str] | None = None) -> int:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     return 0
-
-
-def pipeline_main(argv: Sequence[str] | None = None) -> int:
-    """Run the complete pipeline command."""
-    return _run("pipeline", "cardiac-pipeline", run_complete_pipeline, argv)
 
 
 def lge_bullseye_main(argv: Sequence[str] | None = None) -> int:

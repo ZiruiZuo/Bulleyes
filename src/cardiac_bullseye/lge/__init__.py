@@ -1,12 +1,13 @@
 """Standalone LGE intensity and infarct-scar bullseye API."""
 
 from .io import (
+    LgeStudyLoad,
     LgeStudyWithScar,
     load_lge_study,
+    load_lge_study_with_extent,
     load_lge_study_with_scar,
     save_aha16_scar_csv,
     save_aha_scar_csv,
-    save_lge_bullseye_npz,
     save_lge_scar_mask,
 )
 from .mapping import (
@@ -44,6 +45,7 @@ __all__ = [
     "AhaScarSummary",
     "LgeBullseyeResult",
     "LgeScarResult",
+    "LgeStudyLoad",
     "LgeStudyWithScar",
     "ReferenceMask",
     "ReferencePolygon",
@@ -57,13 +59,13 @@ __all__ = [
     "compute_reference_statistics",
     "compute_slice_lge_profiles",
     "load_lge_study",
+    "load_lge_study_with_extent",
     "load_lge_study_with_scar",
     "load_reference_roi_masks",
     "load_reference_roi_polygons",
     "plot_lge_bullseye",
     "plot_lge_scar_bullseye",
     "rasterize_reference_roi_polygons",
-    "save_lge_bullseye_npz",
     "save_aha16_scar_csv",
     "save_aha_scar_csv",
     "save_lge_scar_mask",

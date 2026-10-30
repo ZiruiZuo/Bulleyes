@@ -9,7 +9,7 @@ from cardiac_bullseye.config import load_config
 
 
 def test_example_config_exercises_all_config_sections(monkeypatch):
-    """Keep the documented example parseable by the real pipeline loader."""
+    """Keep the documented example parseable by a supported workflow loader."""
     example_path = Path(__file__).parents[2] / "config.example.toml"
 
     with example_path.open("rb") as config_file:
@@ -17,7 +17,7 @@ def test_example_config_exercises_all_config_sections(monkeypatch):
     assert raw_config.keys() == {"case", "short_axis", "bullseye", "lge_bullseye"}
 
     monkeypatch.setattr(Path, "is_file", lambda _path: True)
-    config = load_config(example_path, "pipeline")
+    config = load_config(example_path, "short-axis")
 
     assert config.case.id == "patient_043"
     assert config.short_axis.slice_spacing_mm == 8.0

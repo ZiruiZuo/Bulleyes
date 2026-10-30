@@ -12,7 +12,6 @@ from cardiac_bullseye.lge import (
     load_lge_study,
     load_lge_study_with_scar,
     plot_lge_bullseye,
-    save_lge_bullseye_npz,
 )
 from cardiac_bullseye.coronary import ProjectedCoronaryPath
 from cardiac_bullseye.territory.models import LandmarkPair, StudyData
@@ -402,7 +401,7 @@ def test_deleted_basal_slice_promotes_last_retained_slice_to_outer_ring():
     np.testing.assert_allclose(result.intensity[-1], 20.0)
 
 
-def test_lge_outputs_include_numeric_values_and_png(tmp_path):
+def test_continuous_intensity_plot_writes_png(tmp_path):
     study, landmarks = _constant_slice_study()
     result = compute_lge_bullseye(
         study,
@@ -413,7 +412,6 @@ def test_lge_outputs_include_numeric_values_and_png(tmp_path):
         radial_smoothing_sigma=0.0,
         six_segment_warp=False,
     )
-    npz_path = save_lge_bullseye_npz(tmp_path / "lge_bullseye.npz", result)
     png_path = tmp_path / "lge_bullseye.png"
     figure, axis = plot_lge_bullseye(result, png_path, show=False)
     figure.canvas.draw()
@@ -422,9 +420,6 @@ def test_lge_outputs_include_numeric_values_and_png(tmp_path):
     }
     assert len(axis.patches) == 1
 
-    with np.load(npz_path) as payload:
-        np.testing.assert_array_equal(payload["intensity"], result.intensity)
-        assert float(payload["apex_intensity"]) == pytest.approx(10.0)
     assert png_path.is_file() and png_path.stat().st_size > 1000
 
 

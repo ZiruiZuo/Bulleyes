@@ -25,7 +25,6 @@ from ..territory.mapping import compute_bullseye
 from ..territory.plotting import save_bullseye_figure
 from ..territory.radial import projection_minimum_radius
 from .bullseye_frame import prepare_bullseye_frame
-from .short_axis import ShortAxisOutputs
 
 
 @dataclass(frozen=True)
@@ -38,7 +37,6 @@ class BullseyeOutputs:
 
 def generate_bullseye(
     config: AppConfig,
-    short_axis_outputs: ShortAxisOutputs | None = None,
     *,
     landmark_mode: str = "per-slice",
     projection: str = "1-4",
@@ -49,28 +47,10 @@ def generate_bullseye(
             "landmark_mode must be 'per-slice' or 'single-reference'"
         )
     minimum_radius = projection_minimum_radius(projection)
-    if short_axis_outputs is None:
-        validate_config(config, "bullseye")
-        mr_path = config.bullseye.short_axis_mr
-        mask_path = config.bullseye.short_axis_mask
-        geometry_path = config.bullseye.geometry_json
-    else:
-        validate_config(config, "pipeline")
-        mr_path = short_axis_outputs.mr
-        mask_path = short_axis_outputs.mask
-        geometry_path = short_axis_outputs.geometry
-        missing = [
-            path
-            for path in (mr_path, mask_path, geometry_path)
-            if path is None or not path.is_file()
-        ]
-        if missing:
-            raise FileNotFoundError(
-                "Short-axis workflow did not produce all bullseye inputs: "
-                + ", ".join(
-                    "<missing mask>" if path is None else str(path) for path in missing
-                )
-            )
+    validate_config(config, "bullseye")
+    mr_path = config.bullseye.short_axis_mr
+    mask_path = config.bullseye.short_axis_mask
+    geometry_path = config.bullseye.geometry_json
 
     if mask_path is None:
         raise ValueError("Bullseye generation requires a short-axis territory mask")

@@ -14,11 +14,24 @@ from ..territory.aha17 import AHA_SEGMENT_NAMES
 
 
 @dataclass(frozen=True)
+class LgeStudyLoad:
+    """A cropped LGE study plus its extent in the original slice stack."""
+
+    study: StudyData
+    first_slice: int
+    last_slice: int
+    full_slice_count: int
+
+
+@dataclass(frozen=True)
 class LgeStudyWithScar:
     """An LGE study with a co-cropped externally generated scar mask."""
 
     study: StudyData
     scar_mask: NDArray[np.bool_]
+    first_slice: int = 0
+    last_slice: int | None = None
+    full_slice_count: int | None = None
 
 
 def _require_same_geometry(lge_image, mask_image, *, candidate_name="myocardium mask") -> None:
@@ -114,6 +127,15 @@ def load_lge_study(
     LGE intensity values are kept.
     """
 
+    return load_lge_study_with_extent(lge_path, myocardium_mask_path).study
+
+
+def load_lge_study_with_extent(
+    lge_path: str | Path,
+    myocardium_mask_path: str | Path,
+) -> LgeStudyLoad:
+    """Load cropped LGE data and retain its original slice-index extent."""
+
     try:
         import SimpleITK as sitk
     except ImportError as error:
@@ -130,8 +152,15 @@ def load_lge_study(
 
     lge_image = sitk.ReadImage(str(lge_path))
     mask_image = sitk.ReadImage(str(mask_path))
-    study, _, _, _ = _study_from_lge_and_myocardium(lge_image, mask_image, sitk)
-    return study
+    study, myocardium, first_slice, last_slice = _study_from_lge_and_myocardium(
+        lge_image, mask_image, sitk
+    )
+    return LgeStudyLoad(
+        study=study,
+        first_slice=first_slice,
+        last_slice=last_slice,
+        full_slice_count=int(myocardium.shape[0]),
+    )
 
 
 def load_lge_study_with_scar(
@@ -187,22 +216,10 @@ def load_lge_study_with_scar(
     return LgeStudyWithScar(
         study=study,
         scar_mask=np.ascontiguousarray(scar[first_slice:last_slice], dtype=bool),
+        first_slice=first_slice,
+        last_slice=last_slice,
+        full_slice_count=int(myocardium.shape[0]),
     )
-
-
-def save_lge_bullseye_npz(path: str | Path, result) -> Path:
-    """Save raw-intensity LGE bullseye arrays for downstream analysis."""
-
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        intensity=result.intensity,
-        radial_positions=result.radial_positions,
-        canonical_angles=result.angles,
-        apex_intensity=np.asarray(result.apex_intensity, dtype=float),
-    )
-    return path
 
 
 def save_lge_scar_mask(

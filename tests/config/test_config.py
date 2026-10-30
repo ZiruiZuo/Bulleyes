@@ -1,11 +1,9 @@
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from cardiac_bullseye.config import (
     ConfigError,
-    LgeBullseyeConfig,
     load_config,
     validate_config,
 )
@@ -41,7 +39,7 @@ def test_shared_landmark_paths_resolve_from_config_directory(
     assert getattr(config, section).landmarks_path == expected
 
 
-def test_pipeline_config_parses_windows_paths_and_defaults(tmp_path):
+def test_removed_pipeline_workflow_is_rejected(tmp_path):
     mr = tmp_path / "mr.nii.gz"
     mask = tmp_path / "mask.nii.gz"
     coronary = tmp_path / "coronary.nii.gz"
@@ -62,20 +60,8 @@ coronary_mask = '{coronary.as_posix()}'
 world_myocardium_mask = '{myocardium.as_posix()}'
 """,
     )
-    config = load_config(config_path, "pipeline")
-    assert config.case.id == "patient_043"
-    assert config.short_axis.slice_spacing_mm == 8.0
-    assert config.bullseye.angle_count == 360
-    assert config.bullseye.coronary_label_names == {
-        1: "Coronary LAD",
-        2: "Coronary LCX",
-        3: "Coronary RCA",
-    }
-    assert config.bullseye.distance_vessel_labels == (1, 2, 3)
-    assert config.short_axis.reuse_saved_points is False
-    assert config.bullseye.reuse_saved_points is False
-    assert config.lge_bullseye.reuse_saved_points is False
-    assert config.case.output_path("bullseye.png").name == "patient_043_bullseye.png"
+    with pytest.raises(ConfigError, match="workflow must be one of"):
+        load_config(config_path, "pipeline")
 
 
 def test_reuse_saved_points_must_be_enabled_explicitly(tmp_path):
@@ -180,6 +166,33 @@ intensity_coronary_overlay = true
     assert "bullseye.world_myocardium_mask" not in message
 
 
+def test_lge_coronary_overlay_reuses_intensity_overlay_config_contract(tmp_path):
+    lge = tmp_path / "lge.nii.gz"
+    mask = tmp_path / "myocardium.nii.gz"
+    lge.touch()
+    mask.touch()
+    config_path = write_config(
+        tmp_path,
+        f"""
+[case]
+id = "case"
+[lge_bullseye]
+lge = '{lge.as_posix()}'
+mask = '{mask.as_posix()}'
+[bullseye]
+intensity_coronary_overlay = true
+""",
+    )
+
+    with pytest.raises(ConfigError) as caught:
+        load_config(config_path, "lge-bullseye")
+
+    message = str(caught.value)
+    assert "bullseye.geometry_json" in message
+    assert "bullseye.coronary_mask" in message
+    assert "bullseye.world_myocardium_mask" not in message
+
+
 def test_short_axis_parses_optional_orientation_reference(tmp_path):
     source = tmp_path / "source.nii.gz"
     reference = tmp_path / "lge_sax.nii.gz"
@@ -201,7 +214,7 @@ orientation_reference = '{reference.as_posix()}'
     assert config.short_axis.orientation_reference == reference
 
 
-def test_lge_bullseye_config_parses_inputs_and_mapping_parameters(tmp_path):
+def test_lge_bullseye_config_parses_inputs_and_scar_parameters(tmp_path):
     """The LGE command must receive its complete input contract from TOML."""
     lge = tmp_path / "lge_sax.nii.gz"
     mask = tmp_path / "lge_mask.seg.nrrd"
@@ -216,10 +229,6 @@ output_directory = "results"
 [lge_bullseye]
 lge = '{lge.as_posix()}'
 mask = '{mask.as_posix()}'
-angle_count = 180
-radial_count = 120
-angular_smoothing_sigma_deg = 2.0
-radial_smoothing_sigma = 0.5
 six_segment_warp = false
 scar_sd_multiplier = 5.5
 normal_roi_min_voxels = 24
@@ -230,42 +239,10 @@ normal_roi_min_voxels = 24
 
     assert config.lge_bullseye.lge == lge
     assert config.lge_bullseye.mask == mask
-    assert config.lge_bullseye.angle_count == 180
-    assert config.lge_bullseye.radial_count == 120
-    assert config.lge_bullseye.angular_smoothing_sigma_deg == 2.0
-    assert config.lge_bullseye.radial_smoothing_sigma == 0.5
     assert config.lge_bullseye.six_segment_warp is False
     assert config.lge_bullseye.scar_sd_multiplier == 5.5
     assert config.lge_bullseye.normal_roi_min_voxels == 24
     assert config.case.output_directory == tmp_path / "results"
-
-
-@pytest.mark.parametrize("with_external_scar", [False, True])
-def test_lge_bullseye_preserves_positional_mapping_parameters(
-    tmp_path, with_external_scar
-):
-    lge = tmp_path / "lge.nii.gz"
-    mask = tmp_path / "mask.nii.gz"
-    scar = tmp_path / "scar.nii.gz"
-    for path in (lge, mask, scar):
-        path.touch()
-    config_path = write_config(
-        tmp_path,
-        """
-[lge_bullseye]
-lge = "lge.nii.gz"
-mask = "mask.nii.gz"
-""",
-    )
-    config = load_config(config_path, "lge-bullseye")
-    scar_option = {"lge_scar_mask": scar} if with_external_scar else {}
-
-    options = LgeBullseyeConfig(lge, mask, 180, 120, **scar_option)
-
-    assert options.angle_count == 180
-    assert options.radial_count == 120
-    assert options.lge_scar_mask == (scar if with_external_scar else None)
-    validate_config(replace(config, lge_bullseye=options), "lge-bullseye")
 
 
 def test_lge_bullseye_parses_optional_external_scar_mask(tmp_path):
@@ -292,8 +269,6 @@ lge_scar_mask = "scar_mask.nii.gz"
     assert config.lge_bullseye.lge == lge
     assert config.lge_bullseye.mask == mask
     assert config.lge_bullseye.lge_scar_mask == scar
-    assert config.lge_bullseye.angle_count == 360
-    assert config.lge_bullseye.radial_count == 300
     assert config.lge_bullseye.six_segment_warp is True
     assert config.case.output_directory == tmp_path / "results"
 
@@ -374,39 +349,6 @@ source_mr = "source.nii.gz"
             load_config(config_path, "unknown-workflow")
         else:
             validate_config(load_config(config_path, "short-axis"), "unknown-workflow")
-
-
-@pytest.mark.parametrize("requires_scar", [False, True])
-def test_lge_bullseye_rejects_mapping_grids_too_small_for_annotation(
-    tmp_path, requires_scar
-):
-    """Allowing either value would defer a known invalid grid until after UI."""
-    lge = tmp_path / "lge.nii.gz"
-    mask = tmp_path / "mask.nrrd"
-    scar = tmp_path / "scar.nii.gz"
-    for path in (lge, mask, scar):
-        path.touch()
-    scar_input = f"lge_scar_mask = '{scar.as_posix()}'" if requires_scar else ""
-    config_path = write_config(
-        tmp_path,
-        f"""
-[case]
-id = "case"
-[lge_bullseye]
-lge = '{lge.as_posix()}'
-mask = '{mask.as_posix()}'
-    {scar_input}
-angle_count = 3
-radial_count = 2
-""",
-    )
-
-    with pytest.raises(ConfigError) as caught:
-        load_config(config_path, "lge-bullseye")
-
-    message = str(caught.value)
-    assert "lge_bullseye.angle_count" in message
-    assert "lge_bullseye.radial_count" in message
 
 
 @pytest.mark.parametrize(

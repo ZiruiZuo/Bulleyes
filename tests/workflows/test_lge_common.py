@@ -8,8 +8,8 @@ matplotlib.use("Agg")
 
 from cardiac_bullseye.territory.models import LandmarkPair, StudyData
 from cardiac_bullseye.workflows.lge_common import (
-    compute_lge_bullseye_products,
-    save_lge_bullseye_figures,
+    compute_lge_scar_summary,
+    save_lge_scar_figure,
 )
 
 
@@ -38,109 +38,84 @@ def _three_slice_ring_study() -> tuple[StudyData, list[LandmarkPair], np.ndarray
     return study, landmarks, scar
 
 
-def _products():
+def _summary():
     study, landmarks, scar = _three_slice_ring_study()
-    return compute_lge_bullseye_products(
+    return compute_lge_scar_summary(
         study,
         landmarks,
         scar,
-        angle_count=24,
-        radial_count=9,
-        angular_smoothing_sigma_deg=0.0,
-        radial_smoothing_sigma=0.0,
         six_segment_warp=False,
     )
 
 
-def test_compute_lge_bullseye_products_returns_intensity_and_scar_products():
-    """Dropping either downstream product must fail this shared-core contract."""
+def test_compute_lge_scar_summary_returns_native_segment_counts():
 
     study, _, scar = _three_slice_ring_study()
 
-    products = _products()
+    summary = _summary()
 
-    assert products.intensity.intensity.shape == (9, 24)
-    assert products.scar.scar_percentages.shape == (16,)
-    assert products.scar.scar_voxel_counts.sum() == np.count_nonzero(scar)
-    assert np.all(products.scar.scar_voxel_counts >= 0)
+    assert summary.scar_percentages.shape == (16,)
+    assert summary.scar_voxel_counts.sum() == np.count_nonzero(scar)
+    assert np.all(summary.scar_voxel_counts >= 0)
     assert study.mr.shape == scar.shape
 
 
-def test_save_lge_bullseye_figures_writes_both_atomic_pngs(tmp_path):
-    """Omitting either plot save must leave one requested image absent."""
-
-    intensity_path = tmp_path / "intensity.png"
+def test_save_lge_scar_figure_writes_atomic_png(tmp_path):
     scar_path = tmp_path / "scar.png"
 
-    saved_intensity, saved_scar = save_lge_bullseye_figures(
-        _products(), intensity_path, scar_path
+    saved_scar = save_lge_scar_figure(
+        _summary(), scar_path, include_apex=False
     )
 
-    assert saved_intensity == intensity_path
     assert saved_scar == scar_path
-    assert intensity_path.stat().st_size > 0
     assert scar_path.stat().st_size > 0
 
 
-def test_compute_lge_bullseye_products_rejects_scar_shape_mismatch():
+def test_compute_lge_scar_summary_rejects_scar_shape_mismatch():
     """Accepting a differently shaped scar array would misalign native voxels."""
 
     study, landmarks, _ = _three_slice_ring_study()
 
     with pytest.raises(ValueError, match="scar_mask must have the same shape as LGE"):
-        compute_lge_bullseye_products(
+        compute_lge_scar_summary(
             study,
             landmarks,
             np.zeros((2, 25, 25), dtype=bool),
-            angle_count=24,
-            radial_count=9,
-            angular_smoothing_sigma_deg=0.0,
-            radial_smoothing_sigma=0.0,
             six_segment_warp=False,
         )
 
 
-def test_compute_lge_bullseye_products_rejects_scar_outside_myocardium():
+def test_compute_lge_scar_summary_rejects_scar_outside_myocardium():
     """Allowing background scar voxels would inflate AHA scar burden."""
 
     study, landmarks, scar = _three_slice_ring_study()
     scar[0, 0, 0] = True
 
     with pytest.raises(ValueError, match="scar_mask must be contained within myocardium"):
-        compute_lge_bullseye_products(
+        compute_lge_scar_summary(
             study,
             landmarks,
             scar,
-            angle_count=24,
-            radial_count=9,
-            angular_smoothing_sigma_deg=0.0,
-            radial_smoothing_sigma=0.0,
             six_segment_warp=False,
         )
 
 
-def test_compute_lge_bullseye_products_excludes_deleted_basal_data():
-    """Ignoring deleted indices would retain basal scar and intensity data."""
+def test_compute_lge_scar_summary_excludes_deleted_basal_data():
 
     study, landmarks, scar = _three_slice_ring_study()
 
-    products = compute_lge_bullseye_products(
+    summary = compute_lge_scar_summary(
         study,
         landmarks,
         scar,
-        angle_count=24,
-        radial_count=9,
-        angular_smoothing_sigma_deg=0.0,
-        radial_smoothing_sigma=0.0,
         six_segment_warp=False,
         deleted_slice_indices=(2,),
     )
 
-    assert products.scar.scar_voxel_counts.sum() == 2
-    assert np.allclose(products.intensity.intensity[-1], 20.0)
+    assert summary.scar_voxel_counts.sum() == 2
 
 
-def test_compute_lge_products_use_manual_center_overrides_for_both_outputs():
+def test_compute_lge_scar_summary_uses_manual_center_overrides():
     study, landmarks, scar = _three_slice_ring_study()
     x_gradient = np.arange(study.mr.shape[2], dtype=float)[None, None, :]
     study = StudyData(
@@ -148,21 +123,15 @@ def test_compute_lge_products_use_manual_center_overrides_for_both_outputs():
         territory_mask=study.territory_mask,
         slice_positions=study.slice_positions,
     )
-    options = dict(
-        angle_count=24,
-        radial_count=9,
-        angular_smoothing_sigma_deg=0.0,
-        radial_smoothing_sigma=0.0,
-        six_segment_warp=False,
-    )
+    options = dict(six_segment_warp=False)
 
-    automatic = compute_lge_bullseye_products(
+    automatic = compute_lge_scar_summary(
         study,
         landmarks,
         scar,
         **options,
     )
-    adjusted = compute_lge_bullseye_products(
+    adjusted = compute_lge_scar_summary(
         study,
         landmarks,
         scar,
@@ -170,30 +139,21 @@ def test_compute_lge_products_use_manual_center_overrides_for_both_outputs():
         **options,
     )
 
-    assert not np.allclose(
-        automatic.intensity.intensity,
-        adjusted.intensity.intensity,
-        equal_nan=True,
-    )
     assert not np.array_equal(
-        automatic.scar.scar_voxel_counts,
-        adjusted.scar.scar_voxel_counts,
+        automatic.scar_voxel_counts,
+        adjusted.scar_voxel_counts,
     )
 
 
-def test_compute_lge_products_accepts_a_single_pass_center_iterable():
+def test_compute_lge_scar_summary_accepts_a_single_pass_center_iterable():
     study, landmarks, scar = _three_slice_ring_study()
 
-    products = compute_lge_bullseye_products(
+    summary = compute_lge_scar_summary(
         study,
         landmarks,
         scar,
-        angle_count=24,
-        radial_count=9,
-        angular_smoothing_sigma_deg=0.0,
-        radial_smoothing_sigma=0.0,
         six_segment_warp=False,
         center_overrides=(center for center in [(14.0, 12.0), None, None]),
     )
 
-    assert products.intensity.intensity.shape == (9, 24)
+    assert summary.scar_percentages.shape == (16,)

@@ -12,6 +12,7 @@ import pytest
 import SimpleITK as sitk
 
 from cardiac_bullseye.config import load_config
+from cardiac_bullseye.coronary import CardiacGeometry, ProjectedCoronaryPath
 from cardiac_bullseye.territory.io import save_landmarks_json
 from cardiac_bullseye.territory.models import LandmarkPair
 from cardiac_bullseye.workflows import generate_lge_bullseye
@@ -89,7 +90,7 @@ def forbid_interactive_scar_calculation(monkeypatch):
     monkeypatch.setattr("cardiac_bullseye.workflows.lge.compute_lge_scar", _forbidden)
 
 
-def test_external_scar_branch_writes_exactly_three_outputs(monkeypatch, tmp_path):
+def test_external_scar_branch_writes_landmarks_and_scar_png(monkeypatch, tmp_path):
     """Replacing this with the ROI/scar workflow must fail this test."""
     config = _write_external_scar_case(tmp_path, scar_foreground=True)
     monkeypatch.setattr(
@@ -98,19 +99,15 @@ def test_external_scar_branch_writes_exactly_three_outputs(monkeypatch, tmp_path
     )
     outputs = generate_lge_bullseye(config)
 
-    assert outputs.numeric_data is None
     assert outputs.reference_rois is None
     assert outputs.scar_mask is None
     assert outputs.scar_segments is None
     assert outputs.landmarks.name == "032602_lge_landmarks.json"
-    assert outputs.figure.name == "032602_lge_intensity_bullseye.png"
     assert outputs.scar_figure.name == "032602_lge_scar_bullseye.png"
     assert outputs.landmarks.is_file()
-    assert outputs.figure.stat().st_size > 0
     assert outputs.scar_figure.stat().st_size > 0
     assert {path.name for path in config.case.output_directory.iterdir()} == {
         "032602_lge_landmarks.json",
-        "032602_lge_intensity_bullseye.png",
         "032602_lge_scar_bullseye.png",
     }
 
@@ -194,7 +191,7 @@ def test_external_scar_workflow_passes_saved_manual_centers(monkeypatch, tmp_pat
         return landmarks
 
     captured = {}
-    real_compute = module.compute_lge_bullseye_products
+    real_compute = module.compute_lge_scar_summary
 
     def capture_centers(*args, **kwargs):
         captured["centers"] = kwargs.get("center_overrides")
@@ -204,7 +201,7 @@ def test_external_scar_workflow_passes_saved_manual_centers(monkeypatch, tmp_pat
         "cardiac_bullseye.workflows.bullseye_frame.select_landmarks_interactively",
         select_with_centers,
     )
-    monkeypatch.setattr(module, "compute_lge_bullseye_products", capture_centers)
+    monkeypatch.setattr(module, "compute_lge_scar_summary", capture_centers)
 
     generate_lge_bullseye(config)
 
@@ -236,12 +233,11 @@ def test_external_scar_workflow_reuses_landmarks_without_ui(monkeypatch, tmp_pat
 
     outputs = generate_lge_bullseye(config)
 
-    assert outputs.figure.is_file()
     assert outputs.scar_figure.is_file()
 
 
 def test_external_scar_workflow_allows_an_empty_scar_mask(monkeypatch, tmp_path):
-    """An external mask with no scar still produces the two AHA-16 figures."""
+    """An external mask with no scar still produces the AHA-16 scar figure."""
     config = _write_external_scar_case(tmp_path, scar_foreground=False)
     monkeypatch.setattr(
         "cardiac_bullseye.workflows.bullseye_frame.select_landmarks_interactively",
@@ -252,47 +248,9 @@ def test_external_scar_workflow_allows_an_empty_scar_mask(monkeypatch, tmp_path)
 
     assert {path.name for path in config.case.output_directory.iterdir()} == {
         outputs.landmarks.name,
-        outputs.figure.name,
         outputs.scar_figure.name,
     }
-    assert outputs.figure.stat().st_size > 0
     assert outputs.scar_figure.stat().st_size > 0
-
-
-def test_external_intensity_contains_only_aha16_data_and_rendered_labels(
-    monkeypatch, tmp_path
-):
-    """Computing or drawing the apex cap would introduce segment 17 again."""
-    from cardiac_bullseye.workflows import lge_common
-
-    config = _write_external_scar_case(tmp_path, scar_foreground=True)
-    monkeypatch.setattr(
-        "cardiac_bullseye.workflows.bullseye_frame.select_landmarks_interactively",
-        _fake_fresh_landmarks,
-    )
-    plot = lge_common.plot_lge_bullseye
-    rendered = []
-
-    def capture_real_plot(result, *args, **kwargs):
-        figure, axis = plot(result, *args, **kwargs)
-        figure.canvas.draw()
-        rendered.append((result, axis))
-        return figure, axis
-
-    monkeypatch.setattr(lge_common, "plot_lge_bullseye", capture_real_plot)
-
-    outputs = generate_lge_bullseye(config)
-
-    result, axis = rendered[0]
-    assert {text.get_text() for text in axis.texts} == {
-        str(segment) for segment in range(1, 17)
-    }
-    assert np.isnan(result.apex_intensity)
-    assert len(axis.patches) == 0  # No colored segment-17 cap.
-    np.testing.assert_allclose(
-        axis.collections[0].get_array().reshape(9, 24), result.intensity
-    )
-    assert outputs.figure.stat().st_size > 0
 
 
 def test_external_scar_figure_contains_only_aha16_data_and_rendered_labels(
@@ -403,6 +361,94 @@ def _no_annotation(*_args, **_kwargs):
     pytest.fail("shared reuse must not open annotation")
 
 
+def test_external_lge_scar_overlay_projects_coronaries_on_cropped_geometry(
+    monkeypatch, tmp_path
+):
+    from cardiac_bullseye.workflows import lge as module
+
+    config, _ring = _write_shared_external_case(tmp_path)
+    save_landmarks_json(
+        config.lge_bullseye.landmarks_path,
+        [SHARED_PAIR] * 5,
+        image_shape=(5, 29, 25),
+    )
+    geometry_path = tmp_path / "geometry.json"
+    coronary_path = tmp_path / "coronary.nii.gz"
+    geometry_path.touch()
+    coronary_path.touch()
+    config = replace(
+        config,
+        bullseye=replace(
+            config.bullseye,
+            intensity_coronary_overlay=True,
+            geometry_json=geometry_path,
+            coronary_mask=coronary_path,
+            coronary_label_colors={2: "#123456"},
+            coronary_label_names={2: "Coronary LCX"},
+            coronary_linewidth=2.7,
+            show_final_figure=False,
+        ),
+    )
+    sampling_affine = np.diag([1.0, 1.0, 6.0, 1.0])
+    geometry = CardiacGeometry(
+        true_apex_world=np.asarray([0.0, 0.0, 0.0]),
+        base_center_world=np.asarray([0.0, 0.0, 36.0]),
+        long_axis=np.asarray([0.0, 0.0, 1.0]),
+        short_axis_x=np.asarray([1.0, 0.0, 0.0]),
+        short_axis_y=np.asarray([0.0, 1.0, 0.0]),
+        short_axis_affine=sampling_affine,
+        short_axis_shape=(29, 25, 7),
+        slice_positions_mm=np.arange(7, dtype=float) * 6.0,
+        base_height_mm=36.0,
+        short_axis_sampling_affine=sampling_affine,
+    )
+    projected = [
+        ProjectedCoronaryPath(
+            label=2,
+            xy=np.asarray([[1.0, 0.0], [2.0, 0.5]], dtype=float),
+        )
+    ]
+    calls = {}
+    monkeypatch.setattr(module, "load_cardiac_geometry", lambda path: geometry)
+    monkeypatch.setattr(
+        module,
+        "validate_geometry_against_short_axis_nifti",
+        lambda selected, path: calls.update(validated=(selected, path)),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_coronary_paths_from_nifti",
+        lambda path, **kwargs: calls.update(loaded=(path, kwargs)) or [object()],
+    )
+
+    def project(paths, cropped_geometry, study, landmarks, **kwargs):
+        calls["projection"] = (paths, cropped_geometry, study, landmarks, kwargs)
+        return projected
+
+    monkeypatch.setattr(module, "project_coronary_paths", project)
+    monkeypatch.setattr(
+        module,
+        "save_lge_scar_figure",
+        lambda summary, path, **kwargs: calls.update(plot=(summary, path, kwargs)) or path,
+    )
+
+    generate_lge_bullseye(config, projection="0-4")
+
+    assert calls["validated"] == (geometry, config.lge_bullseye.lge)
+    cropped = calls["projection"][1]
+    assert cropped.short_axis_shape == (29, 25, 5)
+    np.testing.assert_allclose(cropped.slice_positions_mm, [6, 12, 18, 24, 30])
+    np.testing.assert_allclose(cropped.short_axis_sampling_affine[:3, 3], [0, 0, 6])
+    np.testing.assert_allclose(
+        calls["projection"][4]["radial_frame"].source_radii,
+        [0, 1, 2, 3, 4],
+    )
+    assert calls["plot"][2]["coronary_paths"] == projected
+    assert calls["plot"][2]["coronary_label_colors"] == {2: "#123456"}
+    assert calls["plot"][2]["coronary_label_names"] == {2: "Coronary LCX"}
+    assert calls["plot"][2]["coronary_linewidth"] == pytest.approx(2.7)
+
+
 @pytest.mark.parametrize("mode", ["per-slice", "single-reference"])
 @pytest.mark.parametrize("projection, radii, segment_count", [
     ("1-4", [1., 1.75, 2.5, 3.25, 4.], 16),
@@ -424,7 +470,7 @@ def test_external_scar_branch_forwards_shared_frame(
         monkeypatch.setattr("cardiac_bullseye.workflows.bullseye_frame." + selector,
                             _no_annotation)
     captured = {}
-    real_compute = module.compute_lge_bullseye_products
+    real_compute = module.compute_lge_scar_summary
 
     def compute(study, landmarks, *args, **kwargs):
         np.testing.assert_allclose(study.slice_positions, [0., 6., 12., 18., 24.])
@@ -432,9 +478,9 @@ def test_external_scar_branch_forwards_shared_frame(
         assert kwargs["minimum_radius"] == radii[0]
         assert kwargs["center_overrides"] == centers
         assert kwargs["deleted_slice_indices"] == set()
-        products = real_compute(study, landmarks, *args, **kwargs)
-        captured["products"] = products
-        return products
+        summary = real_compute(study, landmarks, *args, **kwargs)
+        captured["summary"] = summary
+        return summary
 
     def capture_plot(name, real_plot):
         def plot(*args, **kwargs):
@@ -443,9 +489,7 @@ def test_external_scar_branch_forwards_shared_frame(
             return figure, axis
         return plot
 
-    monkeypatch.setattr(module, "compute_lge_bullseye_products", compute)
-    monkeypatch.setattr(lge_common, "plot_lge_bullseye",
-                        capture_plot("intensity_axis", lge_common.plot_lge_bullseye))
+    monkeypatch.setattr(module, "compute_lge_scar_summary", compute)
     monkeypatch.setattr(lge_common, "plot_lge_scar_bullseye",
                         capture_plot("scar_axis", lge_common.plot_lge_scar_bullseye))
 
@@ -453,49 +497,34 @@ def test_external_scar_branch_forwards_shared_frame(
 
     assert outputs.landmarks == path
     assert path.read_bytes() == saved
-    assert outputs.numeric_data is None
     assert outputs.reference_rois is None
     assert outputs.scar_mask is None
     assert outputs.scar_segments is None
     assert [field.name for field in fields(outputs)] == [
-        "landmarks", "numeric_data", "figure", "reference_rois",
-        "scar_mask", "scar_segments", "scar_figure",
+        "landmarks", "reference_rois", "scar_mask", "scar_segments", "scar_figure",
     ]
     assert {file.name for file in config.case.output_directory.iterdir()} == {
-        "shared_lge_intensity_bullseye.png", "shared_lge_scar_bullseye.png"
+        "shared_lge_scar_bullseye.png"
     }
-    products = captured["products"]
-    assert len(products.scar.scar_percentages) == segment_count
-    assert products.scar.scar_voxel_counts.sum() == 5
-    assert products.scar.myocardial_voxel_counts.sum() == 5 * ring.sum()
+    summary = captured["summary"]
+    assert len(summary.scar_percentages) == segment_count
+    assert summary.scar_voxel_counts.sum() == 5
+    assert summary.myocardial_voxel_counts.sum() == 5 * ring.sum()
     scar_axis = captured["scar_axis"]
-    intensity_axis = captured["intensity_axis"]
     assert {text.get_text().splitlines()[0] for text in scar_axis.texts} == {
         str(segment) for segment in range(1, segment_count + 1)
     }
     if projection == "0-4":
         expected = 100. / ring.sum()
-        assert products.scar.scar_voxel_counts[16] == 1
-        assert products.scar.myocardial_voxel_counts[16] == ring.sum()
-        assert products.scar.scar_percentages[16] == pytest.approx(expected)
+        assert summary.scar_voxel_counts[16] == 1
+        assert summary.myocardial_voxel_counts[16] == ring.sum()
+        assert summary.scar_percentages[16] == pytest.approx(expected)
         center = [text.get_text() for text in scar_axis.texts
                   if text.get_position() == (0., 0.)]
         assert center == [f"17\n{expected:.1f}%"]
         assert scar_axis.patches[-1].get_facecolor() != (1., 1., 1., 1.)
-        values = products.intensity.intensity
-        np.testing.assert_allclose(values[0], values[0, 0])
-        assert np.ptp(values[3]) > 0.
-        assert np.ptp(values[1]) == pytest.approx(np.ptp(values[3]) * 7. / 27.)
-        assert np.ptp(values[2]) == pytest.approx(np.ptp(values[3]) * 20. / 27.)
-        assert not intensity_axis.patches  # Continuous intensity reaches the origin.
     else:
-        assert np.isnan(products.intensity.apex_intensity)
         assert len(scar_axis.patches) == 16
-        assert not intensity_axis.patches
-        assert {text.get_text() for text in intensity_axis.texts} == {
-            str(segment) for segment in range(1, 17)
-        }
-        assert products.intensity.radial_positions[0] == 1.
 
 
 @pytest.mark.parametrize("reuse, mode", [(True, "single-reference"), (False, "per-slice")])
@@ -530,23 +559,23 @@ def test_external_missing_shared_fallback_and_fresh_overwrite(
     selector = ("select_single_reference_interactively" if reuse
                 else "select_landmarks_interactively")
     monkeypatch.setattr("cardiac_bullseye.workflows.bullseye_frame." + selector, select)
-    real_compute = module.compute_lge_bullseye_products
-    products = []
+    real_compute = module.compute_lge_scar_summary
+    summaries = []
 
     def compute(*args, **kwargs):
         assert kwargs["center_overrides"] == centers
         assert kwargs["deleted_slice_indices"] == {4}
         # Deleted basal positions still have extrapolated radii, but are excluded.
         np.testing.assert_allclose(kwargs["source_radii"], [1., 2., 3., 4., 5.])
-        product = real_compute(*args, **kwargs)
-        products.append(product)
-        return product
+        summary = real_compute(*args, **kwargs)
+        summaries.append(summary)
+        return summary
 
-    monkeypatch.setattr(module, "compute_lge_bullseye_products", compute)
+    monkeypatch.setattr(module, "compute_lge_scar_summary", compute)
     assert generate_lge_bullseye(config, landmark_mode=mode).landmarks == path
     assert json.loads(path.read_text())["slices"][0]["aip"] == [12., 7.]
-    assert products[0].scar.scar_voxel_counts.sum() == 4
-    assert products[0].scar.myocardial_voxel_counts.sum() == 4 * ring.sum()
+    assert summaries[0].scar_voxel_counts.sum() == 4
+    assert summaries[0].myocardial_voxel_counts.sum() == 4 * ring.sum()
 
 
 @pytest.mark.parametrize("explicit", [False, True])
@@ -563,14 +592,14 @@ def test_external_legacy_lge_coordinates_migrate_only_at_default_path(
     ] * 5}))
     config = replace(config, lge_bullseye=replace(
         config.lge_bullseye, landmarks_path=path if explicit else None))
-    real_compute = module.compute_lge_bullseye_products
+    real_compute = module.compute_lge_scar_summary
 
     def compute(study, landmarks, *args, **kwargs):
         assert landmarks == [SHARED_PAIR] * 5
         assert kwargs["center_overrides"] == [(12., 14.)] * 5
         return real_compute(study, landmarks, *args, **kwargs)
 
-    monkeypatch.setattr(module, "compute_lge_bullseye_products", compute)
+    monkeypatch.setattr(module, "compute_lge_scar_summary", compute)
     if explicit:
         with pytest.raises(ValueError, match="Ambiguous unversioned"):
             generate_lge_bullseye(config)
@@ -599,7 +628,7 @@ def test_external_invalid_shared_frame_fails_before_mapping(
         payload["slices"][2] = {"status": "deleted"}
     path.write_text(json.dumps(payload))
     monkeypatch.setattr(
-        "cardiac_bullseye.workflows.lge.compute_lge_bullseye_products",
+        "cardiac_bullseye.workflows.lge.compute_lge_scar_summary",
         lambda *_args, **_kwargs: pytest.fail("mapping must not start"))
     with pytest.raises(ValueError, match=match):
         generate_lge_bullseye(config, projection="0-4")

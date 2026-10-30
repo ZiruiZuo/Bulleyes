@@ -10,7 +10,7 @@ output_directory = 'outputs'
 [short_axis]
 # 原始长轴/任意方向 MR NIfTI；短轴规划流程的必需输入。
 source_mr = 'inputs/patient_043_mr.nii.gz'
-# 原始世界空间供血区 mask；完整流程的必需输入，可选用于只生成短轴。
+# 原始世界空间供血区 mask；可选用于生成对应的短轴 mask。
 source_mask = 'inputs/patient_043_territory.nii.gz'
 # 可选：参考短轴 NIfTI。只继承其层内 x 方向，不改变本病例选择的 LV 长轴。
 orientation_reference = 'inputs/patient_043_lge_sax.nii.gz'
@@ -26,8 +26,7 @@ fov_mm = [192.0, 192.0]
 [bullseye]
 # short_axis_mr 和 short_axis_mask 同时供 cardiac-bullseye 与
 # cardiac-intensity-bullseye 使用。geometry_json 供 cardiac-bullseye 使用；
-# 当下方 intensity_coronary_overlay = true 时也供强度牛眼图投影冠脉。
-# cardiac-pipeline 使用本次短轴规划刚生成的文件，因此会忽略这里的三项路径。
+# 当下方 intensity_coronary_overlay = true 时，也供强度或 LGE scar 牛眼图投影冠脉。
 short_axis_mr = 'outputs/patient_043_short_axis.nii.gz'
 short_axis_mask = 'outputs/patient_043_short_axis_mask.nii.gz'
 geometry_json = 'outputs/patient_043_geometry.json'
@@ -37,11 +36,12 @@ geometry_json = 'outputs/patient_043_geometry.json'
 # 省略 landmarks_path 时使用输出目录中的 <case>_landmarks.json。
 reuse_saved_points = false
 
-# false（默认）：强度牛眼图不读取 geometry_json 或 coronary_mask；
-# true：把冠脉投影到同一张强度牛眼图上。
+# false（默认）：强度/LGE scar 牛眼图不读取 geometry_json 或 coronary_mask；
+# true：把冠脉投影到当前命令输出的强度图或 scar 图上。
+# LGE 使用时，geometry_json 必须匹配完整 LGE NIfTI，而不是其他短轴网格。
 intensity_coronary_overlay = false
 
-# coronary_mask 是 cardiac-bullseye 的必需输入；开启上述强度图冠脉叠加时也必需。
+# coronary_mask 是 cardiac-bullseye 的必需输入；开启上述可选冠脉叠加时也必需。
 # world_myocardium_mask 只用于 cardiac-bullseye 的冠脉距离计算。
 coronary_mask = 'inputs/patient_043_coronary.nii.gz'
 world_myocardium_mask = 'inputs/patient_043_myocardium.nii.gz'
@@ -79,19 +79,15 @@ show_final_figure = true
 # 已按 Apex → Base 排列的短轴 LGE，以及直接在该网格上标注的心肌 mask。
 lge = 'inputs/patient_043_lge_sax.nii.gz'
 mask = 'inputs/patient_043_lge_myocardium.seg.nrrd'
-# 可选：填写后使用已有 scar，跳过正常 ROI 标注与 scar 计算，仅输出 landmark JSON 和两张 PNG。
-# 省略时手绘正常心肌 ROI 并计算 scar，输出七项结果。
+# 可选：填写后使用已有 scar，跳过正常 ROI 标注与 scar 计算，仅输出 landmark JSON 和 scar PNG。
+# 省略时手绘正常心肌 ROI 并计算 scar，输出 landmark、ROI JSON、scar mask、CSV 和 scar PNG。
 # lge_scar_mask = 'inputs/patient_043_lge_scar_mask.nii.gz'
 # 可选共享路径；省略时用输出目录中的 <case>_lge_landmarks.json。
 # landmarks_path = 'shared/patient_043_landmarks.json'
 # true 时优先读取 landmark，缺失时打开窗口；false 时重新标注并覆盖。
 # 未提供 lge_scar_mask 时，正常心肌 ROI 每次重画，不复用旧 ROI JSON。
 reuse_saved_points = false
-# 以下参数均可省略并使用这里展示的默认值。
-angle_count = 360
-radial_count = 300
-angular_smoothing_sigma_deg = 1.5
-radial_smoothing_sigma = 1.5
+# 以下参数可省略并使用这里展示的默认值。
 six_segment_warp = true
 # 以下两项仅在未提供 lge_scar_mask 时使用。
 # 每层阈值 = mean + k * sample SD (ddof=1)，仅严格大于阈值计为 scar。
@@ -102,8 +98,8 @@ normal_roi_min_voxels = 20
 # cardiac-lge-bullseye 的两种 scar 来源均支持 --mode per-slice|single-reference（默认 per-slice）
 # 和 --projection 1-4|0-4（默认 1-4），配置文件中不需要增加这两项。
 # 0-4：第17节段 [0,1)，13–16 [1,2)，7–12 [2,3)，1–6 [3,4]。
-# 第17节段百分比汇总原生 scar/心肌体素数；强度在 r<1 内做 smoothstep 中心融合。
-# 1-4：只测量16节段；交互 ROI scar 中心 N/A，外部 scar 中心空白。
+# 第17节段百分比汇总原生 scar/心肌体素数。
+# 1-4：只测量16节段，中心不绘制第17节段。
 # 共享 JSON 必须对应同一短轴网格和裁剪后的 Apex → Base 层索引。
 # 新文件含 coordinate_version=1；旧共同 *_landmarks.json 可读取，旧 LGE 转置坐标
 # 只在未指定 landmarks_path 的默认 *_lge_landmarks.json 上于内存迁移。

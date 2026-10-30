@@ -15,7 +15,6 @@ import pytest
     [
         ("short_axis_main", "generate_short_axis", "short-axis"),
         ("bullseye_main", "generate_bullseye", "bullseye"),
-        ("pipeline_main", "run_complete_pipeline", "pipeline"),
         ("lge_bullseye_main", "generate_lge_bullseye", "lge-bullseye"),
     ],
 )
@@ -218,7 +217,6 @@ def test_run_handles_expected_filesystem_errors_without_a_traceback(
     [
         "short_axis_main",
         "bullseye_main",
-        "pipeline_main",
         "lge_bullseye_main",
         "intensity_bullseye_main",
     ],
@@ -280,3 +278,24 @@ def test_pyproject_registers_intensity_bullseye_command():
     assert scripts["cardiac-intensity-bullseye"] == (
         "cardiac_bullseye.cli:intensity_bullseye_main"
     )
+
+
+def test_pyproject_registers_only_the_four_supported_commands():
+    pyproject = Path(__file__).parents[2] / "pyproject.toml"
+    scripts = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]
+
+    assert scripts == {
+        "cardiac-short-axis": "cardiac_bullseye.cli:short_axis_main",
+        "cardiac-bullseye": "cardiac_bullseye.cli:bullseye_main",
+        "cardiac-intensity-bullseye": (
+            "cardiac_bullseye.cli:intensity_bullseye_main"
+        ),
+        "cardiac-lge-bullseye": "cardiac_bullseye.cli:lge_bullseye_main",
+    }
+
+
+def test_cli_does_not_expose_removed_pipeline_command():
+    from cardiac_bullseye import cli
+
+    assert not hasattr(cli, "pipeline_main")
+    assert not hasattr(cli, "run_complete_pipeline")

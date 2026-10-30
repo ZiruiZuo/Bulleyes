@@ -91,6 +91,74 @@ def _centers_to_edges(values: np.ndarray) -> np.ndarray:
     )
 
 
+def _draw_projected_coronaries(
+    axis,
+    coronary_paths: list[ProjectedCoronaryPath] | None,
+    *,
+    coronary_label_colors: dict[int, str] | None,
+    coronary_label_names: dict[int, str] | None,
+    coronary_default_color: str | None,
+    coronary_linewidth: float,
+) -> float:
+    """Draw projected coronary polylines and return their largest radius."""
+
+    paths = coronary_paths or []
+    label_colors = coronary_label_colors or {}
+    label_names = coronary_label_names or {}
+    labels = sorted({path.label for path in paths})
+    resolved_colors = {
+        label: label_colors.get(
+            label,
+            coronary_default_color
+            if coronary_default_color is not None
+            else CORONARY_DEFAULT_LABEL_COLORS.get(
+                label,
+                CORONARY_AUTO_COLORS[index % len(CORONARY_AUTO_COLORS)],
+            ),
+        )
+        for index, label in enumerate(labels)
+    }
+    for path in paths:
+        axis.plot(
+            path.xy[:, 0],
+            path.xy[:, 1],
+            color=resolved_colors[path.label],
+            linewidth=coronary_linewidth,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            zorder=20,
+        )
+
+    finite_radii = [
+        np.linalg.norm(path.xy[np.isfinite(path.xy).all(axis=1)], axis=1)
+        for path in paths
+        if np.isfinite(path.xy).all(axis=1).any()
+    ]
+    maximum_radius = max(
+        (float(values.max()) for values in finite_radii if values.size),
+        default=0.0,
+    )
+    if labels:
+        axis.legend(
+            handles=[
+                Line2D(
+                    [0],
+                    [0],
+                    color=resolved_colors[label],
+                    linewidth=coronary_linewidth,
+                    label=label_names.get(
+                        label,
+                        "Coronary" if len(labels) == 1 else f"Coronary {label}",
+                    ),
+                )
+                for label in labels
+            ],
+            loc="upper left",
+            frameon=False,
+        )
+    return maximum_radius
+
+
 def plot_lge_bullseye(
     result: LgeBullseyeResult,
     output_path: str | Path | None = None,
@@ -157,67 +225,17 @@ def plot_lge_bullseye(
         axis, show_numbers=show_numbers, include_apex=result.include_apex
     )
 
-    coronary_paths = coronary_paths or []
-    coronary_label_colors = coronary_label_colors or {}
-    coronary_label_names = coronary_label_names or {}
-    coronary_labels = sorted({path.label for path in coronary_paths})
-    resolved_coronary_colors = {
-        label: coronary_label_colors.get(
-            label,
-            coronary_default_color
-            if coronary_default_color is not None
-            else CORONARY_DEFAULT_LABEL_COLORS.get(
-                label,
-                CORONARY_AUTO_COLORS[index % len(CORONARY_AUTO_COLORS)],
-            ),
-        )
-        for index, label in enumerate(coronary_labels)
-    }
-    for path in coronary_paths:
-        axis.plot(
-            path.xy[:, 0],
-            path.xy[:, 1],
-            color=resolved_coronary_colors[path.label],
-            linewidth=coronary_linewidth,
-            solid_capstyle="round",
-            solid_joinstyle="round",
-            zorder=20,
-        )
-
-    finite_radii = [
-        np.linalg.norm(path.xy[np.isfinite(path.xy).all(axis=1)], axis=1)
-        for path in coronary_paths
-        if np.isfinite(path.xy).all(axis=1).any()
-    ]
-    maximum_coronary_radius = max(
-        (float(values.max()) for values in finite_radii if values.size),
-        default=0.0,
+    maximum_coronary_radius = _draw_projected_coronaries(
+        axis,
+        coronary_paths,
+        coronary_label_colors=coronary_label_colors,
+        coronary_label_names=coronary_label_names,
+        coronary_default_color=coronary_default_color,
+        coronary_linewidth=coronary_linewidth,
     )
     view_limit = max(4.45, maximum_coronary_radius * 1.05 + 0.10)
     axis.set_xlim(-view_limit, view_limit)
     axis.set_ylim(-view_limit, view_limit)
-
-    if coronary_labels:
-        legend_handles = []
-        for label in coronary_labels:
-            name = coronary_label_names.get(
-                label,
-                "Coronary" if len(coronary_labels) == 1 else f"Coronary {label}",
-            )
-            legend_handles.append(
-                Line2D(
-                    [0],
-                    [0],
-                    color=resolved_coronary_colors[label],
-                    linewidth=coronary_linewidth,
-                    label=name,
-                )
-            )
-        axis.legend(
-            handles=legend_handles,
-            loc="upper left",
-            frameon=False,
-        )
 
     colorbar = figure.colorbar(mesh, ax=axis, fraction=0.046, pad=0.04)
     colorbar.set_label(colorbar_label)
@@ -239,6 +257,11 @@ def plot_lge_scar_bullseye(
     title: str | None = None,
     colormap: str | Colormap | None = None,
     include_apex: bool = True,
+    coronary_paths: list[ProjectedCoronaryPath] | None = None,
+    coronary_label_colors: dict[int, str] | None = None,
+    coronary_label_names: dict[int, str] | None = None,
+    coronary_default_color: str | None = None,
+    coronary_linewidth: float = 1.8,
     show: bool = True,
 ):
     """Render native-voxel scar percentages for 16 or 17 AHA segments."""
@@ -324,6 +347,17 @@ def plot_lge_scar_bullseye(
             0.0, 0.0, apex_label, ha="center", va="center", fontsize=11,
             color="black" if luminance > 0.55 else "white",
         )
+    maximum_coronary_radius = _draw_projected_coronaries(
+        axis,
+        coronary_paths,
+        coronary_label_colors=coronary_label_colors,
+        coronary_label_names=coronary_label_names,
+        coronary_default_color=coronary_default_color,
+        coronary_linewidth=coronary_linewidth,
+    )
+    view_limit = max(4.45, maximum_coronary_radius * 1.05 + 0.10)
+    axis.set_xlim(-view_limit, view_limit)
+    axis.set_ylim(-view_limit, view_limit)
     axis.set_title(
         f"AHA-{percentages.size} infarct scar burden" if title is None else title,
         pad=16,

@@ -1,19 +1,25 @@
-"""Unified workflow for native LGE intensity and AHA scar burden."""
+"""Unified workflow for native-voxel LGE scar burden."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 
 from ..config import AppConfig, validate_config
+from ..coronary import (
+    CardiacGeometry,
+    load_cardiac_geometry,
+    load_coronary_paths_from_nifti,
+    project_coronary_paths,
+    validate_geometry_against_short_axis_nifti,
+)
 from ..lge import (
     compute_lge_scar,
-    load_lge_study,
+    load_lge_study_with_extent,
     load_lge_study_with_scar,
     save_aha16_scar_csv,
-    save_lge_bullseye_npz,
     save_lge_scar_mask,
     save_reference_roi_masks,
     select_reference_rois_interactively,
@@ -21,18 +27,114 @@ from ..lge import (
 from ..territory.models import StudyData
 from ..territory.radial import projection_minimum_radius
 from .bullseye_frame import BullseyeFrameInputs, prepare_bullseye_frame
-from .lge_common import compute_lge_bullseye_products, save_lge_bullseye_figures
+from .lge_common import compute_lge_scar_summary, save_lge_scar_figure
 
 
 @dataclass(frozen=True)
 class LgeBullseyeOutputs:
     landmarks: Path
-    numeric_data: Path | None
-    figure: Path
     reference_rois: Path | None
     scar_mask: Path | None
     scar_segments: Path | None
     scar_figure: Path
+
+
+def _crop_geometry_to_lge_extent(
+    geometry: CardiacGeometry,
+    *,
+    first_slice: int,
+    last_slice: int,
+    full_slice_count: int,
+) -> CardiacGeometry:
+    """Align full-stack geometry with the mask-cropped LGE study."""
+
+    if geometry.short_axis_shape[2] != full_slice_count:
+        raise ValueError(
+            "Geometry JSON and the complete LGE stack have different slice counts"
+        )
+    if not (0 <= first_slice < last_slice <= full_slice_count):
+        raise ValueError("Invalid cropped LGE slice extent")
+    if first_slice == 0 and last_slice == full_slice_count:
+        return geometry
+
+    def shifted(affine: np.ndarray) -> np.ndarray:
+        result = np.asarray(affine, dtype=float).copy()
+        result[:3, 3] = (
+            np.asarray(affine, dtype=float)
+            @ np.asarray([0.0, 0.0, float(first_slice), 1.0])
+        )[:3]
+        return result
+
+    return replace(
+        geometry,
+        short_axis_affine=shifted(geometry.short_axis_affine),
+        short_axis_sampling_affine=shifted(geometry.short_axis_sampling_affine),
+        short_axis_shape=(
+            geometry.short_axis_shape[0],
+            geometry.short_axis_shape[1],
+            last_slice - first_slice,
+        ),
+        slice_positions_mm=geometry.slice_positions_mm[first_slice:last_slice],
+    )
+
+
+def _load_lge_coronary_geometry(
+    config: AppConfig,
+    lge_path: Path | None,
+    *,
+    first_slice: int,
+    last_slice: int,
+    full_slice_count: int,
+) -> CardiacGeometry | None:
+    if not config.bullseye.intensity_coronary_overlay:
+        return None
+    geometry_path = config.bullseye.geometry_json
+    if lge_path is None or geometry_path is None:
+        raise ValueError("LGE coronary overlay requires LGE and geometry inputs")
+    print("    Loading geometry for the optional coronary overlay...")
+    geometry = load_cardiac_geometry(geometry_path)
+    validate_geometry_against_short_axis_nifti(geometry, lge_path)
+    return _crop_geometry_to_lge_extent(
+        geometry,
+        first_slice=first_slice,
+        last_slice=last_slice,
+        full_slice_count=full_slice_count,
+    )
+
+
+def _project_lge_coronaries(
+    config: AppConfig,
+    study: StudyData,
+    frame: BullseyeFrameInputs,
+    geometry: CardiacGeometry | None,
+):
+    if geometry is None:
+        return []
+    coronary_mask = config.bullseye.coronary_mask
+    if coronary_mask is None:
+        raise ValueError("LGE coronary overlay requires a coronary mask")
+    print("    Extracting and projecting the registered coronary centreline...")
+    coronary_paths = load_coronary_paths_from_nifti(
+        coronary_mask,
+        mask_is_centerline=config.bullseye.coronary_mask_is_centerline,
+        min_path_length_mm=config.bullseye.coronary_min_path_length_mm,
+        resample_step_mm=config.bullseye.coronary_resample_step_mm,
+        smoothing_sigma_voxels=config.bullseye.coronary_smoothing_sigma_voxels,
+    )
+    projected = project_coronary_paths(
+        coronary_paths,
+        geometry,
+        study,
+        frame.landmarks,
+        six_segment_warp=config.lge_bullseye.six_segment_warp,
+        deleted_slice_indices=frame.deleted_slice_indices,
+        radial_frame=frame.radial_frame,
+    )
+    print(
+        f"    Extracted {len(coronary_paths)} 3-D path(s); "
+        f"projected {len(projected)} visible path(s)"
+    )
+    return projected
 
 
 def generate_lge_bullseye(
@@ -57,8 +159,6 @@ def generate_lge_bullseye(
         config.lge_bullseye.landmarks_path
         or config.case.output_path("lge_landmarks.json")
     )
-    numeric_path = config.case.output_path("lge_intensity_bullseye.npz")
-    figure_path = config.case.output_path("lge_intensity_bullseye.png")
     reference_rois_path = config.case.output_path("lge_normal_rois.json")
     scar_mask_path = config.case.output_path("lge_scar_mask.nii.gz")
     scar_segments_path = config.case.output_path("lge_scar_segments.csv")
@@ -70,25 +170,37 @@ def generate_lge_bullseye(
             landmark_mode=landmark_mode,
             projection=projection,
             landmarks_path=landmarks_path,
-            figure_path=figure_path,
             scar_figure_path=scar_figure_path,
         )
 
-    print("1/7 Loading LGE and checking the myocardium mask grid...")
-    study = load_lge_study(lge_path, mask_path)
+    print("1/6 Loading LGE and checking the myocardium mask grid...")
+    loaded = load_lge_study_with_extent(lge_path, mask_path)
+    study = loaded.study
     print(
         f"    Using {study.slice_count} apex-to-base slices with in-plane "
         f"shape {study.mr.shape[1:]}"
     )
 
-    print("2/7 Preparing shared AIP/IIP points and radial frame...")
+    cardiac_geometry = _load_lge_coronary_geometry(
+        config,
+        lge_path,
+        first_slice=loaded.first_slice,
+        last_slice=loaded.last_slice,
+        full_slice_count=loaded.full_slice_count,
+    )
+    radial_positions = (
+        cardiac_geometry.slice_positions_mm
+        if cardiac_geometry is not None
+        else study.slice_positions
+    )
+    print("2/6 Preparing shared AIP/IIP points and radial frame...")
     frame = prepare_bullseye_frame(
         study,
         landmarks_path,
         reuse_saved_points=config.lge_bullseye.reuse_saved_points,
         landmark_mode=landmark_mode,
         projection=projection,
-        slice_positions=study.slice_positions,
+        slice_positions=radial_positions,
         transpose_for_display=True,
         legacy_lge_default=config.lge_bullseye.landmarks_path is None,
         expected_common_basename=config.case.output_path("landmarks.json").name,
@@ -98,9 +210,8 @@ def generate_lge_bullseye(
         study,
         frame,
         projection=projection,
+        cardiac_geometry=cardiac_geometry,
         landmarks_path=landmarks_path,
-        numeric_path=numeric_path,
-        figure_path=figure_path,
         reference_rois_path=reference_rois_path,
         scar_mask_path=scar_mask_path,
         scar_segments_path=scar_segments_path,
@@ -114,15 +225,14 @@ def _generate_from_reference_rois(
     frame: BullseyeFrameInputs,
     *,
     projection: str,
+    cardiac_geometry: CardiacGeometry | None,
     landmarks_path: Path,
-    numeric_path: Path,
-    figure_path: Path,
     reference_rois_path: Path,
     scar_mask_path: Path,
     scar_segments_path: Path,
     scar_figure_path: Path,
 ) -> LgeBullseyeOutputs:
-    """Estimate scar from fresh normal ROIs and save all seven outputs."""
+    """Estimate scar from fresh normal ROIs and save scar-only products."""
 
     lge_path = config.lge_bullseye.lge
     mask_path = config.lge_bullseye.mask
@@ -131,7 +241,7 @@ def _generate_from_reference_rois(
     deleted = frame.deleted_slice_indices
     center_overrides = frame.center_overrides
 
-    print("3/7 Draw a normal-myocardium ROI on every retained slice...")
+    print("3/6 Draw a normal-myocardium ROI on every retained slice...")
     reference_roi_slices = select_reference_rois_interactively(
         study,
         landmarks,
@@ -147,7 +257,7 @@ def _generate_from_reference_rois(
             reference_masks[slice_index] = reference_mask
 
     print(
-        "4/7 Applying the per-slice "
+        "4/6 Applying the per-slice "
         f"{config.lge_bullseye.scar_sd_multiplier:g}-SD scar threshold..."
     )
     scar_result = compute_lge_scar(
@@ -170,42 +280,45 @@ def _generate_from_reference_rois(
     )
 
     segment_count = 17 if minimum_radius == 0.0 else 16
-    print(f"5/7 Mapping native LGE intensity and AHA-{segment_count} scar burden...")
-    products = compute_lge_bullseye_products(
+    print(f"5/6 Mapping native-voxel AHA-{segment_count} scar burden...")
+    scar_summary = compute_lge_scar_summary(
         study,
         landmarks,
         scar_result.scar_mask,
-        angle_count=config.lge_bullseye.angle_count,
-        radial_count=config.lge_bullseye.radial_count,
-        angular_smoothing_sigma_deg=(config.lge_bullseye.angular_smoothing_sigma_deg),
-        radial_smoothing_sigma=config.lge_bullseye.radial_smoothing_sigma,
         six_segment_warp=config.lge_bullseye.six_segment_warp,
         deleted_slice_indices=deleted,
         center_overrides=center_overrides,
         source_radii=frame.radial_frame.source_radii,
         minimum_radius=minimum_radius,
     )
-    saved_numeric = save_lge_bullseye_npz(numeric_path, products.intensity)
-    saved_scar_segments = save_aha16_scar_csv(scar_segments_path, products.scar)
+    saved_scar_segments = save_aha16_scar_csv(scar_segments_path, scar_summary)
+    projected_coronaries = _project_lge_coronaries(
+        config, study, frame, cardiac_geometry
+    )
 
-    print(f"6/7 Saving the native-intensity and AHA-{segment_count} scar-burden figures...")
-    save_lge_bullseye_figures(products, figure_path, scar_figure_path)
-    print("7/7 Finalizing LGE bullseye outputs...")
+    print(f"6/6 Saving the AHA-{segment_count} scar-burden figure...")
+    save_lge_scar_figure(
+        scar_summary,
+        scar_figure_path,
+        include_apex=minimum_radius == 0.0,
+        coronary_paths=projected_coronaries,
+        coronary_label_colors=config.bullseye.coronary_label_colors,
+        coronary_label_names=config.bullseye.coronary_label_names,
+        coronary_default_color=config.bullseye.coronary_default_color,
+        coronary_linewidth=config.bullseye.coronary_linewidth,
+        show=False,
+    )
     print(f"    Landmarks: {landmarks_path}")
-    print(f"    Numeric data: {saved_numeric}")
-    print(f"    Figure: {figure_path}")
     print(f"    Reference ROIs: {reference_rois_path}")
     print(f"    Scar mask: {saved_scar_mask}")
     print(f"    Scar segment table: {saved_scar_segments}")
     print(f"    Scar figure: {scar_figure_path}")
     return LgeBullseyeOutputs(
-        landmarks_path,
-        saved_numeric,
-        figure_path,
-        reference_rois_path,
-        saved_scar_mask,
-        saved_scar_segments,
-        scar_figure_path,
+        landmarks=landmarks_path,
+        reference_rois=reference_rois_path,
+        scar_mask=saved_scar_mask,
+        scar_segments=saved_scar_segments,
+        scar_figure=scar_figure_path,
     )
 
 
@@ -215,10 +328,9 @@ def _generate_from_external_scar(
     landmark_mode: str,
     projection: str,
     landmarks_path: Path,
-    figure_path: Path,
     scar_figure_path: Path,
 ) -> LgeBullseyeOutputs:
-    """Validate an external scar before annotation and save only two figures."""
+    """Validate an external scar before annotation and save its scar figure."""
 
     options = config.lge_bullseye
     minimum_radius = projection_minimum_radius(projection)
@@ -233,6 +345,19 @@ def _generate_from_external_scar(
         f"shape {loaded.study.mr.shape[1:]}"
     )
 
+    cardiac_geometry = _load_lge_coronary_geometry(
+        config,
+        options.lge,
+        first_slice=loaded.first_slice,
+        last_slice=loaded.last_slice,
+        full_slice_count=loaded.full_slice_count,
+    )
+    radial_positions = (
+        cardiac_geometry.slice_positions_mm
+        if cardiac_geometry is not None
+        else loaded.study.slice_positions
+    )
+
     print("2/3 Preparing shared AIP/IIP points and radial frame...")
     frame = prepare_bullseye_frame(
         loaded.study,
@@ -240,7 +365,7 @@ def _generate_from_external_scar(
         reuse_saved_points=options.reuse_saved_points,
         landmark_mode=landmark_mode,
         projection=projection,
-        slice_positions=loaded.study.slice_positions,
+        slice_positions=radial_positions,
         transpose_for_display=True,
         legacy_lge_default=options.landmarks_path is None,
         expected_common_basename=config.case.output_path("landmarks.json").name,
@@ -248,30 +373,35 @@ def _generate_from_external_scar(
     )
 
     segment_count = 17 if minimum_radius == 0.0 else 16
-    print(f"3/3 Mapping native LGE intensity and AHA-{segment_count} scar burden...")
-    products = compute_lge_bullseye_products(
+    print(f"3/3 Mapping native-voxel AHA-{segment_count} scar burden...")
+    scar_summary = compute_lge_scar_summary(
         loaded.study,
         frame.landmarks,
         loaded.scar_mask,
-        angle_count=options.angle_count,
-        radial_count=options.radial_count,
-        angular_smoothing_sigma_deg=options.angular_smoothing_sigma_deg,
-        radial_smoothing_sigma=options.radial_smoothing_sigma,
         six_segment_warp=options.six_segment_warp,
         deleted_slice_indices=frame.deleted_slice_indices,
-        include_apex=minimum_radius == 0.0,
         center_overrides=frame.center_overrides,
         source_radii=frame.radial_frame.source_radii,
         minimum_radius=minimum_radius,
     )
-    save_lge_bullseye_figures(products, figure_path, scar_figure_path)
+    projected_coronaries = _project_lge_coronaries(
+        config, loaded.study, frame, cardiac_geometry
+    )
+    save_lge_scar_figure(
+        scar_summary,
+        scar_figure_path,
+        include_apex=minimum_radius == 0.0,
+        coronary_paths=projected_coronaries,
+        coronary_label_colors=config.bullseye.coronary_label_colors,
+        coronary_label_names=config.bullseye.coronary_label_names,
+        coronary_default_color=config.bullseye.coronary_default_color,
+        coronary_linewidth=config.bullseye.coronary_linewidth,
+        show=False,
+    )
     print(f"    Landmarks: {landmarks_path}")
-    print(f"    Intensity figure: {figure_path}")
     print(f"    Scar figure: {scar_figure_path}")
     return LgeBullseyeOutputs(
         landmarks=landmarks_path,
-        numeric_data=None,
-        figure=figure_path,
         reference_rois=None,
         scar_mask=None,
         scar_segments=None,

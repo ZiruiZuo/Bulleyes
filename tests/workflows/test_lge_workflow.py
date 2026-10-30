@@ -93,26 +93,20 @@ normal_roi_min_voxels = 20
 
     assert config.lge_bullseye.lge_scar_mask is None
     assert [field.name for field in fields(outputs)] == [
-        "landmarks", "numeric_data", "figure", "reference_rois",
-        "scar_mask", "scar_segments", "scar_figure",
+        "landmarks", "reference_rois", "scar_mask", "scar_segments", "scar_figure",
     ]
     assert all(getattr(outputs, field.name).is_file() for field in fields(outputs))
     assert outputs.landmarks.name == "020501_lge_landmarks.json"
-    assert outputs.numeric_data.name == "020501_lge_intensity_bullseye.npz"
-    assert outputs.figure.name == "020501_lge_intensity_bullseye.png"
     assert outputs.reference_rois.name == "020501_lge_normal_rois.json"
     assert outputs.scar_mask.name == "020501_lge_scar_mask.nii.gz"
     assert outputs.scar_segments.name == "020501_lge_scar_segments.csv"
     assert outputs.scar_figure.name == "020501_lge_scar_bullseye.png"
-    assert outputs.numeric_data.is_file()
-    assert outputs.figure.is_file()
     assert outputs.reference_rois.is_file()
     assert outputs.scar_mask.is_file()
     assert outputs.scar_segments.is_file()
     assert outputs.scar_figure.is_file()
-    with np.load(outputs.numeric_data) as payload:
-        assert payload["intensity"].shape == (9, 24)
-        assert float(payload["apex_intensity"]) > 10.0
+    assert not config.case.output_path("lge_intensity_bullseye.npz").exists()
+    assert not config.case.output_path("lge_intensity_bullseye.png").exists()
     saved_scar = sitk.GetArrayFromImage(sitk.ReadImage(str(outputs.scar_mask)))
     assert np.count_nonzero(saved_scar) == 3
     with outputs.reference_rois.open(encoding="utf-8") as reference_file:
@@ -147,7 +141,7 @@ normal_roi_min_voxels = 20
         ),
     )
     reused_outputs = generate_lge_bullseye(reused_config)
-    assert reused_outputs.figure.is_file()
+    assert reused_outputs.scar_figure.is_file()
     assert reference_roi_selections == [True]
 
 
@@ -220,7 +214,7 @@ def _stub_rois(monkeypatch, ring):
     ("1-4", [1., 1.75, 2.5, 3.25, 4.], 16),
     ("0-4", [0., 1., 2., 3., 4.], 17),
 ])
-def test_shared_reuse_maps_intensity_and_native_scar_on_same_frame(
+def test_shared_reuse_maps_native_scar_on_shared_frame(
     monkeypatch, tmp_path, mode, projection, radii, segment_count
 ):
     from cardiac_bullseye.workflows import lge as module, lge_common
@@ -237,14 +231,14 @@ def test_shared_reuse_maps_intensity_and_native_scar_on_same_frame(
                             _no_annotation)
     roi_calls = _stub_rois(monkeypatch, ring)
     captured = {}
-    real_compute = module.compute_lge_bullseye_products
+    real_compute = module.compute_lge_scar_summary
 
     def compute(*args, **kwargs):
         np.testing.assert_allclose(kwargs["source_radii"], radii)
         assert kwargs["minimum_radius"] == radii[0]
         assert kwargs["center_overrides"] == centers
         result = real_compute(*args, **kwargs)
-        captured["products"] = result
+        captured["summary"] = result
         return result
 
     real_plot = lge_common.plot_lge_scar_bullseye
@@ -254,7 +248,7 @@ def test_shared_reuse_maps_intensity_and_native_scar_on_same_frame(
         captured["axis"] = axis
         return figure, axis
 
-    monkeypatch.setattr(module, "compute_lge_bullseye_products", compute)
+    monkeypatch.setattr(module, "compute_lge_scar_summary", compute)
     monkeypatch.setattr(lge_common, "plot_lge_scar_bullseye", plot)
 
     outputs = generate_lge_bullseye(config, landmark_mode=mode, projection=projection)
@@ -262,42 +256,30 @@ def test_shared_reuse_maps_intensity_and_native_scar_on_same_frame(
     assert outputs.landmarks == path
     assert path.read_bytes() == saved
     assert roi_calls == [([PAIR] * 5, set())]
-    products = captured["products"]
-    assert products.scar.scar_voxel_counts.sum() == 5
-    assert products.scar.myocardial_voxel_counts.sum() == ring.sum() * 5
+    summary = captured["summary"]
+    assert summary.scar_voxel_counts.sum() == 5
+    assert summary.myocardial_voxel_counts.sum() == ring.sum() * 5
     with outputs.scar_segments.open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == segment_count
     axis = captured["axis"]
     center_labels = [text.get_text() for text in axis.texts
                      if text.get_position() == (0., 0.)]
-    cap = next(patch for patch in axis.patches if isinstance(patch, Circle))
     if projection == "0-4":
-        assert products.scar.scar_voxel_counts[16] == 1
-        assert products.scar.myocardial_voxel_counts[16] == ring.sum()
+        cap = next(patch for patch in axis.patches if isinstance(patch, Circle))
+        assert summary.scar_voxel_counts[16] == 1
+        assert summary.myocardial_voxel_counts[16] == ring.sum()
         expected = 100. / ring.sum()
-        assert products.scar.scar_percentages[16] == pytest.approx(expected)
+        assert summary.scar_percentages[16] == pytest.approx(expected)
         assert float(rows[16]["scar_percent"]) == pytest.approx(expected, abs=1e-6)
         assert center_labels == [f"17\n{expected:.1f}%"]
         assert cap.get_facecolor() != (1., 1., 1., 1.)
-        # Angular variation fades to zero at the origin but exists at r=1.
-        np.testing.assert_allclose(products.intensity.intensity[0],
-                                   products.intensity.intensity[0, 0])
-        assert np.ptp(products.intensity.intensity[3]) > 0.
-        full_contrast = np.ptp(products.intensity.intensity[3])
-        assert np.ptp(products.intensity.intensity[1]) == pytest.approx(
-            full_contrast * 7. / 27.
-        )
-        assert np.ptp(products.intensity.intensity[2]) == pytest.approx(
-            full_contrast * 20. / 27.
-        )
     else:
         # Original thirds: two basal, one middle, two apical slices.
-        np.testing.assert_array_equal(products.scar.scar_voxel_counts,
+        np.testing.assert_array_equal(summary.scar_voxel_counts,
                                       [0, 0, 0, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 2, 0])
-        assert center_labels == ["N/A"]
-        assert cap.get_facecolor() == (1., 1., 1., 1.)
-        assert products.intensity.apex_intensity == pytest.approx(10. + 100. / ring.sum())
+        assert center_labels == []
+        assert not any(isinstance(patch, Circle) for patch in axis.patches)
     with outputs.reference_rois.open(encoding="utf-8") as stream:
         reference = json.load(stream)
     assert [entry["threshold"] for entry in reference["slices"]] == [10., 20., 30., 40., 50.]
@@ -305,27 +287,6 @@ def test_shared_reuse_maps_intensity_and_native_scar_on_same_frame(
     assert saved_scar.shape == (7, 25, 29)
     assert not saved_scar[[0, -1]].any()
     assert np.count_nonzero(saved_scar) == 5
-
-
-@pytest.mark.parametrize("projection, expected", [
-    ("1-4", [10., 40./3., 50./3., 20., 70./3., 80./3., 30.,
-             100./3., 110./3., 40., 130./3., 140./3., 50.]),
-    ("0-4", [10., 40./3., 50./3., 20., 70./3., 80./3., 30.,
-             100./3., 110./3., 40., 130./3., 140./3., 50.]),
-])
-def test_shared_projection_preserves_mask_anchored_continuous_values(
-    monkeypatch, tmp_path, projection, expected
-):
-    config, ring = _write_shared_case(tmp_path, lesion=False)
-    save_landmarks_json(config.lge_bullseye.landmarks_path, [PAIR] * 5,
-                        image_shape=(5, 29, 25))
-    _stub_rois(monkeypatch, ring)
-    outputs = generate_lge_bullseye(config, projection=projection)
-    with np.load(outputs.numeric_data) as payload:
-        np.testing.assert_allclose(payload["intensity"],
-                                   np.repeat(np.asarray(expected)[:, None], 24, axis=1))
-        np.testing.assert_allclose(payload["radial_positions"],
-                                   np.linspace(1. if projection == "1-4" else 0., 4., 13))
 
 
 @pytest.mark.parametrize("reuse, mode", [(True, "single-reference"), (False, "per-slice")])
@@ -380,14 +341,14 @@ def test_legacy_default_coordinates_migrate_only_at_default_path(
     config = replace(config, lge_bullseye=replace(config.lge_bullseye,
                                                landmarks_path=path if explicit else None))
     _stub_rois(monkeypatch, ring)
-    real_compute = module.compute_lge_bullseye_products
+    real_compute = module.compute_lge_scar_summary
 
     def compute(study, landmarks, *args, **kwargs):
         assert landmarks == [PAIR] * 5
         assert kwargs["center_overrides"] == [(12., 14.)] * 5
         return real_compute(study, landmarks, *args, **kwargs)
 
-    monkeypatch.setattr(module, "compute_lge_bullseye_products", compute)
+    monkeypatch.setattr(module, "compute_lge_scar_summary", compute)
     if explicit:
         with pytest.raises(ValueError, match="Ambiguous unversioned"):
             generate_lge_bullseye(config, projection="1-4")

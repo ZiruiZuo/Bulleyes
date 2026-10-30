@@ -14,7 +14,6 @@ except ModuleNotFoundError:  # pragma: no cover - used only by Python 3.10
 WorkflowName = Literal[
     "short-axis",
     "bullseye",
-    "pipeline",
     "lge-bullseye",
     "intensity-bullseye",
 ]
@@ -89,10 +88,6 @@ class BullseyeConfig:
 class LgeBullseyeConfig:
     lge: Path | None
     mask: Path | None
-    angle_count: int = 360
-    radial_count: int = 300
-    angular_smoothing_sigma_deg: float = 1.5
-    radial_smoothing_sigma: float = 1.5
     six_segment_warp: bool = True
     scar_sd_multiplier: float = 5.0
     normal_roi_min_voxels: int = 20
@@ -165,23 +160,6 @@ def _nonnegative_number(errors: list[str], name: str, value: Any) -> None:
         errors.append(f"{name} must be nonnegative")
 
 
-def _validate_lge_mapping_options(
-    errors: list[str], prefix: str, options: Any
-) -> None:
-    _minimum_integer(errors, f"{prefix}.angle_count", options.angle_count, 4)
-    _minimum_integer(errors, f"{prefix}.radial_count", options.radial_count, 3)
-    _nonnegative_number(
-        errors,
-        f"{prefix}.angular_smoothing_sigma_deg",
-        options.angular_smoothing_sigma_deg,
-    )
-    _nonnegative_number(
-        errors,
-        f"{prefix}.radial_smoothing_sigma",
-        options.radial_smoothing_sigma,
-    )
-
-
 def _increasing_pair(errors: list[str], name: str, value: Any) -> None:
     if (
         not isinstance(value, tuple)
@@ -239,14 +217,6 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
                 ("bullseye.coronary_mask", config.bullseye.coronary_mask),
             ):
                 _input_error(errors, name, path)
-    elif workflow == "pipeline":
-        for name, path in (
-            ("short_axis.source_mr", config.short_axis.source_mr),
-            ("short_axis.source_mask", config.short_axis.source_mask),
-            ("bullseye.coronary_mask", config.bullseye.coronary_mask),
-            ("bullseye.world_myocardium_mask", config.bullseye.world_myocardium_mask),
-        ):
-            _input_error(errors, name, path)
     elif workflow == "lge-bullseye":
         for name, path in (
             ("lge_bullseye.lge", config.lge_bullseye.lge),
@@ -257,9 +227,15 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
             _input_error(
                 errors, "lge_bullseye.lge_scar_mask", config.lge_bullseye.lge_scar_mask
             )
+        if config.bullseye.intensity_coronary_overlay:
+            for name, path in (
+                ("bullseye.geometry_json", config.bullseye.geometry_json),
+                ("bullseye.coronary_mask", config.bullseye.coronary_mask),
+            ):
+                _input_error(errors, name, path)
     else:
         errors.append(
-            "workflow must be one of short-axis, bullseye, pipeline, "
+            "workflow must be one of short-axis, bullseye, "
             "lge-bullseye, intensity-bullseye; "
             f"got {workflow!r}"
         )
@@ -269,10 +245,7 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
         _positive_number(errors, "short_axis.pixel_spacing_mm", config.short_axis.pixel_spacing_mm)
     if config.short_axis.fov_mm is not None:
         _positive_pair(errors, "short_axis.fov_mm", config.short_axis.fov_mm)
-    if (
-        workflow in ("short-axis", "pipeline")
-        and config.short_axis.orientation_reference is not None
-    ):
+    if workflow == "short-axis" and config.short_axis.orientation_reference is not None:
         _input_error(
             errors,
             "short_axis.orientation_reference",
@@ -315,7 +288,6 @@ def validate_config(config: AppConfig, workflow: WorkflowName) -> None:
     if config.bullseye.apex_territory not in (None, 1, 2, 3):
         errors.append("bullseye.apex_territory must be 1, 2, or 3")
 
-    _validate_lge_mapping_options(errors, "lge_bullseye", config.lge_bullseye)
     _positive_number(
         errors,
         "lge_bullseye.scar_sd_multiplier",
@@ -423,14 +395,6 @@ def load_config(path: str | Path, workflow: WorkflowName) -> AppConfig:
             mask=_path(lge_bullseye_data.get("mask"), base_directory),
             lge_scar_mask=_path(
                 lge_bullseye_data.get("lge_scar_mask"), base_directory
-            ),
-            angle_count=lge_bullseye_data.get("angle_count", 360),
-            radial_count=lge_bullseye_data.get("radial_count", 300),
-            angular_smoothing_sigma_deg=lge_bullseye_data.get(
-                "angular_smoothing_sigma_deg", 1.5
-            ),
-            radial_smoothing_sigma=lge_bullseye_data.get(
-                "radial_smoothing_sigma", 1.5
             ),
             six_segment_warp=lge_bullseye_data.get("six_segment_warp", True),
             scar_sd_multiplier=lge_bullseye_data.get(

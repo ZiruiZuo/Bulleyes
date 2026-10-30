@@ -15,6 +15,7 @@ from pathlib import Path
 
 matplotlib.use("Agg")
 
+from cardiac_bullseye.coronary import ProjectedCoronaryPath
 from cardiac_bullseye.lge import (
     apply_brush_stroke,
     compute_aha16_segment_ids,
@@ -369,6 +370,32 @@ def test_scar_bullseye_plots_segments_1_to_16_and_marks_center_na(tmp_path):
     assert labels["1\n0.0%"].get_color() == "black"
     assert labels["2\n100.0%"].get_color() == "white"
     assert len(figure.axes) == 2
+
+
+def test_scar_bullseye_overlays_projected_coronaries_and_legend(tmp_path):
+    segment_ids = np.arange(1, 17, dtype=np.uint8).reshape(1, 4, 4)
+    summary = compute_aha16_scar_percentages(segment_ids % 2 == 0, segment_ids)
+    paths = [
+        ProjectedCoronaryPath(
+            label=2,
+            xy=np.asarray([[0.0, 0.0], [4.8, 0.5]], dtype=float),
+        )
+    ]
+
+    _figure, axis = plot_lge_scar_bullseye(
+        summary,
+        tmp_path / "scar_with_coronary.png",
+        coronary_paths=paths,
+        coronary_label_colors={2: "#123456"},
+        coronary_label_names={2: "Coronary LCX"},
+        coronary_linewidth=2.7,
+        show=False,
+    )
+
+    coronary_line = next(line for line in axis.lines if line.get_color() == "#123456")
+    assert coronary_line.get_linewidth() == pytest.approx(2.7)
+    assert axis.get_legend().get_texts()[0].get_text() == "Coronary LCX"
+    assert axis.get_xlim()[1] > 4.8
 
 
 def test_scar_plot_retries_atomic_replace_and_overwrites_existing_png(
